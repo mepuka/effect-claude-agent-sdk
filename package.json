@@ -1,19 +1,57 @@
 {
   "name": "effect-claude-agent-sdk",
-  "module": "index.ts",
+  "version": "0.1.0",
+  "description": "Effect-native bindings for the Claude Agent SDK - build type-safe AI agents with Effect",
+  "license": "MIT",
+  "keywords": [
+    "effect",
+    "claude",
+    "anthropic",
+    "ai",
+    "agent",
+    "mcp",
+    "typescript",
+    "bun"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mepuka/effect-claude-agent-sdk.git"
+  },
+  "homepage": "https://github.com/mepuka/effect-claude-agent-sdk#readme",
+  "bugs": {
+    "url": "https://github.com/mepuka/effect-claude-agent-sdk/issues"
+  },
+  "author": "Mepuka Kessy",
   "type": "module",
-  "private": true,
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "prepare": "effect-language-service patch",
+    "build": "tsup",
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "bun run build"
   },
   "devDependencies": {
     "@effect/language-service": "^0.70.0",
     "@types/bun": "latest",
-    "effect-solutions": "^0.4.13"
+    "effect-solutions": "^0.4.13",
+    "tsup": "^8.0.0"
   },
   "peerDependencies": {
+    "bun": ">=1.0.0",
     "typescript": "^5"
   },
   "dependencies": {
