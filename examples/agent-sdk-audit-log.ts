@@ -1,3 +1,4 @@
+import * as Console from "effect/Console"
 import * as Context from "effect/Context"
 import * as Effect from "effect/Effect"
 import * as Stream from "effect/Stream"
@@ -65,7 +66,10 @@ const program = Effect.scoped(
     const sdk = yield* AgentSdk
     const log = yield* Experimental.EventLog.EventLog
     const handle = yield* sdk.query("Summarize the current repository.")
-    yield* handle.stream.pipe(Stream.runForEach((message) => logFromMessage(log, message)))
+    yield* handle.stream.pipe(
+      Stream.tap((message) => Console.log(message)),
+      Stream.runForEach((message) => logFromMessage(log, message))
+    )
   }).pipe(
     Effect.provide([
       AgentSdk.layerDefaultFromEnv(),

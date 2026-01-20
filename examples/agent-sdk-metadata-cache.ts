@@ -1,4 +1,6 @@
+import * as Console from "effect/Console"
 import * as Effect from "effect/Effect"
+import * as Stream from "effect/Stream"
 import { AgentSdk, Experimental } from "../src/index.js"
 
 const program = Effect.scoped(
@@ -9,6 +11,7 @@ const program = Effect.scoped(
       timeToLive: "1 minute"
     })
 
+    yield* handle.stream.pipe(Stream.tap((message) => Console.log(message)), Stream.runDrain)
     const commands = yield* cached.supportedCommands
     yield* Effect.log(commands)
     yield* handle.interrupt

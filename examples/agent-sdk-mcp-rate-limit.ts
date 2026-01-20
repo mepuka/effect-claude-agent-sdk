@@ -1,3 +1,4 @@
+import * as Console from "effect/Console"
 import * as Effect from "effect/Effect"
 import * as Schema from "effect/Schema"
 import * as Stream from "effect/Stream"
@@ -39,7 +40,7 @@ const program = Effect.scoped(
         "local-tools": server
       }
     })
-    yield* handle.stream.pipe(Stream.runDrain)
+    yield* handle.stream.pipe(Stream.tap((message) => Console.log(message)), Stream.runDrain)
     yield* handle.interrupt
   }).pipe(
     Effect.provide([

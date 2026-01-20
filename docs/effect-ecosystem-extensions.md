@@ -24,6 +24,16 @@ Effect packages already installed:
 
 ## High-Leverage Abstractions to Build Next
 
+0) Ergonomics + DX Polish (priority)
+- Goal: make the wrapper feel "one-call" for common use cases.
+- Focus: small helpers over new subsystems.
+- Examples:
+  - `AgentRuntime.runText(prompt, options?)` -> final result string.
+  - `QueryHandle` helpers: `collectResult`, `collectMessages`, `tapConsole`.
+  - `Message` builders: `Prompt.text(...)`, `Prompt.user(...)`.
+  - Stream filters: `MessageStream.assistant`, `MessageStream.results`.
+  - `AgentRuntime.withDefaults(options)` to bind default options.
+
 1) AgentRuntime (composed service)
 - Goal: one Layer that wires `AgentSdk`, tooling, policies, caches, and observability.
 - Use: `Layer.mergeAll`, `Context.Tag`, `Logger`, `Metric`, `Config`.
@@ -76,7 +86,9 @@ Effect packages already installed:
 
 ## Supporting Utilities Worth Adding
 
-- Agent message parsing helpers: transform `SDKMessage` into a typed event stream.
+- Agent message parsing helpers: transform `SDKMessage` into typed views (result, assistant, tool).
+- Result helpers: extract `SDKResultSuccess` and final text from a stream or handle.
+- Prompt builders: concise constructors for `SDKUserMessage` payloads.
 - Typed `AgentEvent` model + `Stream` combinators for filtering and fold-based state.
 - `QueryReplay` utilities: persist stream events for deterministic replays/tests.
 - "Replayable" prompts via `PersistedQueue` and `SqlPersistedQueue`.
@@ -96,14 +108,14 @@ Effect packages already installed:
 
 ## Suggested Implementation Order
 
-1) AgentRuntime service + Policy Layer (foundation for user experience).
-2) QuerySupervisor/Pool + SessionPool (resource control and safety).
-3) AgentWorkflow (high-value durable orchestration).
-4) AgentService (RPC/HTTP surface area).
-5) EventBus/Audit + Persistence expansions.
+1) Ergonomics + DX polish (helpers and stream utilities).
+2) AgentRuntime service + Policy Layer (foundation for user experience).
+3) QuerySupervisor/Pool + SessionPool (resource control and safety).
+4) AgentWorkflow (high-value durable orchestration).
+5) AgentService (RPC/HTTP surface area).
+6) EventBus/Audit + Persistence expansions.
 
 ## Notes on Optional Additions
 
 - If `@effect/ai` is added later, it can slot into the same Layer stack for
   embeddings, chunking, and retrieval, but it is not currently installed.
-

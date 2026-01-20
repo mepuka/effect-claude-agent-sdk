@@ -103,13 +103,16 @@ export const QuerySupervisorError = Schema.Union(
 export type QuerySupervisorError = typeof QuerySupervisorError.Type
 export type QuerySupervisorErrorEncoded = typeof QuerySupervisorError.Encoded
 
-export type QuerySupervisorStats = {
-  readonly active: number
-  readonly pending: number
-  readonly concurrencyLimit: number
-  readonly pendingQueueCapacity: number
-  readonly pendingQueueStrategy: "disabled" | "suspend" | "dropping" | "sliding"
-}
+export const QuerySupervisorStatsSchema = Schema.Struct({
+  active: Schema.Number,
+  pending: Schema.Number,
+  concurrencyLimit: Schema.Number,
+  pendingQueueCapacity: Schema.Number,
+  pendingQueueStrategy: Schema.Literal("disabled", "suspend", "dropping", "sliding")
+}).pipe(Schema.annotations({ identifier: "QuerySupervisorStats" }))
+
+export type QuerySupervisorStats = typeof QuerySupervisorStatsSchema.Type
+export type QuerySupervisorStatsEncoded = typeof QuerySupervisorStatsSchema.Encoded
 
 type PendingRequest = {
   readonly queryId: string

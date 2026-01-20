@@ -6,6 +6,7 @@ import * as Either from "effect/Either"
 import * as Exit from "effect/Exit"
 import * as Fiber from "effect/Fiber"
 import * as Layer from "effect/Layer"
+import * as Option from "effect/Option"
 import * as Scope from "effect/Scope"
 import * as TestClock from "effect/TestClock"
 import * as Stream from "effect/Stream"
@@ -222,6 +223,84 @@ test("QuerySupervisor fails pending work when scope closes", async () => {
 
       yield* Deferred.succeed(block, undefined)
       yield* Fiber.join(firstFiber)
+    }).pipe(Effect.provide(layer))
+  )
+
+  await runEffect(program)
+})
+
+test("QuerySupervisor drops when queue is full", async () => {
+  const { AgentSdk } = await import("../src/AgentSdk.js")
+  const { AgentSdkConfig } = await import("../src/AgentSdkConfig.js")
+  const { QuerySupervisor } = await import("../src/QuerySupervisor.js")
+  const { QuerySupervisorConfig } = await import("../src/QuerySupervisorConfig.js")
+
+  const settings: QuerySupervisorSettings = {
+    ...baseSettings,
+    pendingQueueCapacity: 1,
+    pendingQueueStrategy: "dropping"
+  }
+
+  const layer = QuerySupervisor.layer.pipe(
+    Layer.provide(Layer.succeed(QuerySupervisorConfig, { settings })),
+    Layer.provide(
+      AgentSdk.layer.pipe(
+        Layer.provide(Layer.succeed(AgentSdkConfig, { options: {} }))
+      )
+    )
+  )
+
+  const program = Effect.scoped(
+    Effect.gen(function*() {
+      const supervisor = yield* QuerySupervisor
+      const block = yield* Deferred.make<void>()
+      const started = yield* Deferred.make<void>()
+
+      const firstFiber = yield* Effect.fork(
+        Effect.scoped(
+          Effect.gen(function*() {
+            yield* supervisor.submit("first")
+            yield* Deferred.succeed(started, undefined)
+            yield* Deferred.await(block)
+          })
+        )
+      )
+
+      yield* Deferred.await(started)
+
+      const secondFiber = yield* Effect.fork(
+        Effect.scoped(supervisor.submit("second").pipe(Effect.asVoid))
+      )
+
+      yield* Effect.yieldNow()
+
+      const thirdFiber = yield* Effect.fork(
+        supervisor.submit("third").pipe(
+          Effect.either,
+          Effect.timeoutOption("50 millis")
+        )
+      )
+      const fourthFiber = yield* Effect.fork(
+        supervisor.submit("fourth").pipe(
+          Effect.either,
+          Effect.timeoutOption("50 millis")
+        )
+      )
+
+      yield* TestClock.adjust("50 millis")
+
+      const thirdResult = yield* Fiber.join(thirdFiber)
+      const fourthResult = yield* Fiber.join(fourthFiber)
+      const dropped = [thirdResult, fourthResult].filter((result) =>
+        Option.isSome(result) &&
+          Either.isLeft(result.value) &&
+          result.value.left._tag === "QueryQueueFullError"
+      )
+      expect(dropped.length).toBeGreaterThanOrEqual(1)
+
+      yield* Deferred.succeed(block, undefined)
+      yield* Fiber.join(firstFiber)
+      yield* Fiber.join(secondFiber)
     }).pipe(Effect.provide(layer))
   )
 

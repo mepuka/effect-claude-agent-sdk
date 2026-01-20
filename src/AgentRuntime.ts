@@ -84,6 +84,10 @@ export class AgentRuntime extends Context.Tag("@effect/claude-agent-sdk/AgentRun
       prompt: string | AsyncIterable<SDKUserMessage>,
       options?: Options
     ) => Effect.Effect<QueryHandle, AgentSdkError | QuerySupervisorError, Scope.Scope>
+    readonly queryRaw: (
+      prompt: string | AsyncIterable<SDKUserMessage>,
+      options?: Options
+    ) => Effect.Effect<QueryHandle, AgentSdkError | QuerySupervisorError, Scope.Scope>
     readonly stream: (
       prompt: string | AsyncIterable<SDKUserMessage>,
       options?: Options
@@ -102,16 +106,27 @@ export class AgentRuntime extends Context.Tag("@effect/claude-agent-sdk/AgentRun
       const { settings } = yield* AgentRuntimeConfig
       const supervisor = yield* QuerySupervisor
 
+      const runQuery = (prompt: string | AsyncIterable<SDKUserMessage>, options?: Options) => {
+        const merged = mergeOptions(settings.defaultOptions, options)
+        return applyRetry(
+          supervisor.submit(prompt, merged),
+          settings
+        )
+      }
+
       const query = Effect.fn("AgentRuntime.query")(function*(
         prompt: string | AsyncIterable<SDKUserMessage>,
         options?: Options
       ) {
-        const merged = mergeOptions(settings.defaultOptions, options)
-        const handle = yield* applyRetry(
-          supervisor.submit(prompt, merged),
-          settings
-        )
+        const handle = yield* runQuery(prompt, options)
         return yield* decorateHandle(handle, settings)
+      })
+
+      const queryRaw = Effect.fn("AgentRuntime.queryRaw")(function*(
+        prompt: string | AsyncIterable<SDKUserMessage>,
+        options?: Options
+      ) {
+        return yield* runQuery(prompt, options)
       })
 
       const stream = (prompt: string | AsyncIterable<SDKUserMessage>, options?: Options) =>
@@ -121,6 +136,7 @@ export class AgentRuntime extends Context.Tag("@effect/claude-agent-sdk/AgentRun
 
       return AgentRuntime.of({
         query,
+        queryRaw,
         stream,
         stats: supervisor.stats,
         interruptAll: supervisor.interruptAll,
