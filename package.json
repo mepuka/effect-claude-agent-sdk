@@ -1,0 +1,27 @@
+{
+  "name": "effect-claude-agent-sdk",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "prepare": "effect-language-service patch",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@effect/language-service": "^0.70.0",
+    "@types/bun": "latest",
+    "effect-solutions": "^0.4.13"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.12",
+    "@effect/cli": "^0.73.0",
+    "@effect/experimental": "^0.58.0",
+    "@effect/platform": "^0.94.1",
+    "effect": "^3.19.14",
+    "zod": "^4.0.0"
+  }
+}
