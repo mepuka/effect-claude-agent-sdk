@@ -149,10 +149,23 @@ const stringifyValue = (value: unknown): string => {
   }
 }
 
+const isPlainObject = (value: unknown): value is Record<string, unknown> => {
+  if (typeof value !== "object" || value === null) return false
+  const proto = Object.getPrototypeOf(value)
+  return proto === Object.prototype || proto === null
+}
+
 const toStructuredContent = (value: unknown): Record<string, unknown> | undefined => {
-  if (typeof value !== "object" || value === null) return undefined
   if (Array.isArray(value)) return undefined
-  return value as Record<string, unknown>
+  if (isPlainObject(value)) return value
+  try {
+    const json = JSON.stringify(value)
+    if (typeof json !== "string") return undefined
+    const parsed = JSON.parse(json)
+    return isPlainObject(parsed) ? parsed : undefined
+  } catch {
+    return undefined
+  }
 }
 
 /**

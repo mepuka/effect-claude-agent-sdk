@@ -3,6 +3,10 @@ import * as Effect from "effect/Effect"
 import * as Schema from "effect/Schema"
 import { Mcp, Tools } from "../src/index.js"
 
+class ExplosionError extends Error {
+  readonly _tag = "ExplosionError"
+}
+
 test("Mcp.toolsFromToolkit builds tools and renders success results", async () => {
   const Echo = Tools.Tool.make("echo", {
     description: "Echo input",
@@ -71,4 +75,34 @@ test("Mcp.toolsFromToolkit maps handler errors to CallToolResult", async () => {
   const result = await tool.handler({ message: 123 }, {})
   expect(result.isError).toBe(true)
   expect(result.structuredContent).toBeDefined()
+  if (result.structuredContent) {
+    expect(Object.getPrototypeOf(result.structuredContent)).toBe(Object.prototype)
+  }
+})
+
+test("Mcp.toolsFromToolkit serializes error instances in structuredContent", async () => {
+  const Explodes = Tools.Tool.make("explode", {
+    description: "Explodes",
+    parameters: {
+      message: Schema.String
+    },
+    success: Schema.Struct({ message: Schema.String }),
+    failure: Schema.Unknown,
+    failureMode: "error"
+  })
+
+  const toolkit = Tools.Toolkit.make(Explodes)
+  const handlers = toolkit.of({
+    explode: () => Effect.fail(new ExplosionError("boom"))
+  })
+
+  const tools = await Effect.runPromise(Mcp.toolsFromToolkit(toolkit, handlers))
+  const tool = tools[0] as any
+
+  const result = await tool.handler({ message: "hi" }, {})
+  expect(result.isError).toBe(true)
+  expect(result.structuredContent).toBeDefined()
+  if (result.structuredContent) {
+    expect(Object.getPrototypeOf(result.structuredContent)).toBe(Object.prototype)
+  }
 })
