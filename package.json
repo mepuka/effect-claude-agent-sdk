@@ -42,9 +42,13 @@
     "build": "tsup",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "bun run build"
+    "prepublishOnly": "bun run build",
+    "changeset": "changeset",
+    "version": "changeset version",
+    "release": "bun run build && changeset publish"
   },
   "devDependencies": {
+    "@changesets/cli": "^2.29.8",
     "@effect/language-service": "^0.70.0",
     "@types/bun": "latest",
     "effect-solutions": "^0.4.13",
