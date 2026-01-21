@@ -1,6 +1,6 @@
 {
   "name": "effect-claude-agent-sdk",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Effect-native bindings for the Claude Agent SDK - build type-safe AI agents with Effect",
   "license": "MIT",
   "keywords": [
