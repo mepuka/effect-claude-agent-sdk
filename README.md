@@ -218,6 +218,29 @@ const matcher = Hooks.Hook.matcher({
 })
 ```
 
+## Logging & Observability
+
+Match-based logging helpers with Effect-native loggers:
+
+```ts
+import * as Effect from "effect/Effect"
+import * as Stream from "effect/Stream"
+import { AgentRuntime, Logging } from "effect-claude-agent-sdk"
+
+const program = Effect.gen(function* () {
+  const runtime = yield* AgentRuntime
+
+  yield* runtime
+    .stream("Explain quantum computing")
+    .pipe(Logging.tapSdkLogs, Stream.runDrain)
+
+  yield* Logging.logQueryEventStream(runtime.events)
+}).pipe(
+  Effect.provide(AgentRuntime.layerDefault),
+  Effect.provide(Logging.layerDefault)
+)
+```
+
 ## Configuration
 
 ### Environment Variables
@@ -228,6 +251,12 @@ const matcher = Hooks.Hook.matcher({
 | `AGENTSDK_MODEL` | Model to use | `claude-sonnet-4-20250514` |
 | `AGENTSDK_MAX_TURNS` | Maximum conversation turns | `100` |
 | `AGENTSDK_SYSTEM_PROMPT` | System prompt | None |
+| `AGENTSDK_LOG_FORMAT` | Logger format (`pretty`, `structured`, `json`, `logfmt`, `string`) | `pretty` |
+| `AGENTSDK_LOG_LEVEL` | Minimum log level (`trace`, `debug`, `info`, `warn`, `error`, `fatal`, `none`) | `info` |
+| `AGENTSDK_LOG_SPANS` | Include span annotations in logs | `false` |
+| `AGENTSDK_LOG_MESSAGES` | Enable SDK message logging | `true` |
+| `AGENTSDK_LOG_QUERY_EVENTS` | Enable query event logging | `true` |
+| `AGENTSDK_LOG_HOOKS` | Enable hook input logging | `true` |
 
 ### Runtime Configuration
 
@@ -328,6 +357,7 @@ const program = Effect.scoped(
 | `Schema` | Effect Schema definitions for SDK types |
 | `Tools` | Tool and Toolkit definitions |
 | `Hooks` | Hook handlers and matchers |
+| `Logging` | Logging config, matchers, and stream helpers |
 | `Mcp` | MCP server creation utilities |
 | `Experimental` | Rate limiting, persisted queues, event logging |
 
