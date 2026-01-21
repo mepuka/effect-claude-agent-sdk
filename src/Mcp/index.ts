@@ -149,6 +149,51 @@ const stringifyValue = (value: unknown): string => {
   }
 }
 
+const isZodSchema = (value: unknown): value is z.ZodTypeAny =>
+  typeof value === "object" &&
+  value !== null &&
+  ("_def" in value || "_zod" in value || ("safeParse" in value && typeof (value as any).safeParse === "function"))
+
+const isZodRawShapeCompat = (value: unknown): value is ZodRawShape => {
+  if (typeof value !== "object" || value === null) return false
+  if (isZodSchema(value)) return false
+  const entries = Object.values(value)
+  if (entries.length === 0) return true
+  return entries.some((entry) => isZodSchema(entry))
+}
+
+const getZodRawShape = (schema: z.ZodTypeAny): ZodRawShape | undefined => {
+  if (typeof schema !== "object" || schema === null) return undefined
+  const shape = (schema as { shape?: unknown }).shape
+  if (shape) return typeof shape === "function" ? (shape as () => ZodRawShape)() : (shape as ZodRawShape)
+  const defShape = (schema as { _def?: { shape?: unknown } })._def?.shape
+  if (defShape) {
+    return typeof defShape === "function"
+      ? (defShape as () => ZodRawShape)()
+      : (defShape as ZodRawShape)
+  }
+  const zodDefShape = (schema as { _zod?: { def?: { shape?: unknown } } })._zod?.def?.shape
+  if (zodDefShape) {
+    return typeof zodDefShape === "function"
+      ? (zodDefShape as () => ZodRawShape)()
+      : (zodDefShape as ZodRawShape)
+  }
+  return undefined
+}
+
+const normalizeMcpInputSchema = (
+  toolName: string,
+  schema?: McpToolInputSchema
+): McpToolInputSchema | undefined => {
+  if (!schema) return undefined
+  if (isZodRawShapeCompat(schema)) return schema
+  if (isZodSchema(schema)) {
+    const rawShape = getZodRawShape(schema)
+    if (rawShape) return rawShape
+  }
+  throw new Error(`Unsupported MCP input schema for tool '${toolName}'`)
+}
+
 const isPlainObject = (value: unknown): value is Record<string, unknown> => {
   if (typeof value !== "object" || value === null) return false
   const proto = Object.getPrototypeOf(value)
@@ -212,6 +257,14 @@ export const tool = <ParametersSchema extends Schema.Schema.AnyNoContext, R, E>(
           cause
         })
     }))
+    const normalizedInputSchema = yield* Effect.try({
+      try: () => normalizeMcpInputSchema(options.name, inputSchema),
+      catch: (cause) =>
+        McpError.make({
+          message: `Unsupported MCP input schema for tool '${options.name}'`,
+          cause
+        })
+    })
     const decodeParams = Schema.decodeUnknown(options.parameters)
     const handler = (args: unknown, extra: unknown) => {
       const signal = getSignalFromExtra(extra)
@@ -239,7 +292,7 @@ export const tool = <ParametersSchema extends Schema.Schema.AnyNoContext, R, E>(
     return sdkTool(
       options.name,
       options.description,
-      inputSchema as unknown as Parameters<typeof sdkTool>[2],
+      normalizedInputSchema as unknown as Parameters<typeof sdkTool>[2],
       handler
     )
   })
@@ -282,6 +335,14 @@ export const toolsFromToolkit = <
               cause
             })
         }))
+        const normalizedInputSchema = yield* Effect.try({
+          try: () => normalizeMcpInputSchema(toolEntry.name, inputSchema),
+          catch: (cause) =>
+            McpError.make({
+              message: `Unsupported MCP input schema for tool '${toolEntry.name}'`,
+              cause
+            })
+        })
         const handler = (args: unknown, extra: unknown) => {
           const signal = getSignalFromExtra(extra)
           const effect = built.handle(toolEntry.name as any, args).pipe(
@@ -294,7 +355,7 @@ export const toolsFromToolkit = <
         return sdkTool(
           toolEntry.name,
           toolEntry.description ?? toolEntry.name,
-          inputSchema as Parameters<typeof sdkTool>[2],
+          normalizedInputSchema as Parameters<typeof sdkTool>[2],
           handler
         )
       })

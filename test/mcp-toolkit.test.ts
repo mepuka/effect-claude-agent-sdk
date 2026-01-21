@@ -2,6 +2,7 @@ import { test, expect } from "bun:test"
 import * as Effect from "effect/Effect"
 import * as Schema from "effect/Schema"
 import { Mcp, Tools } from "../src/index.js"
+import { z } from "zod"
 
 class ExplosionError extends Error {
   readonly _tag = "ExplosionError"
@@ -25,7 +26,7 @@ test("Mcp.toolsFromToolkit builds tools and renders success results", async () =
   expect(tools).toHaveLength(1)
 
   const tool = tools[0] as any
-  expect(tool.inputSchema.safeParse({ message: "hi" }).success).toBe(true)
+  expect(z.object(tool.inputSchema).safeParse({ message: "hi" }).success).toBe(true)
 
   const result = await tool.handler({ message: "hi" }, {})
   expect(result.isError).toBe(false)

@@ -2,6 +2,7 @@ import { test, expect } from "bun:test"
 import * as Effect from "effect/Effect"
 import * as Schema from "effect/Schema"
 import { Mcp } from "../src/index.js"
+import { z } from "zod"
 
 test("Mcp.tool builds a zod input schema and runs effect handler", async () => {
   const toolEffect = Mcp.tool({
@@ -18,7 +19,15 @@ test("Mcp.tool builds a zod input schema and runs effect handler", async () => {
   })
 
   const tool = (await Effect.runPromise(toolEffect)) as any
-  const parsed = tool.inputSchema.safeParse({ message: "hi" })
+  const inputSchema = tool.inputSchema as Record<string, unknown> | undefined
+  expect(inputSchema).toBeDefined()
+  if (inputSchema) {
+    expect((inputSchema as { safeParse?: unknown }).safeParse).toBeUndefined()
+    expect(typeof (inputSchema as { message?: { safeParse?: unknown } }).message?.safeParse).toBe(
+      "function"
+    )
+  }
+  const parsed = z.object(tool.inputSchema).safeParse({ message: "hi" })
   expect(parsed.success).toBe(true)
 
   const result = await tool.handler({ message: "hi" }, {})
@@ -56,6 +65,7 @@ test("Mcp.tool supports optional tuple elements in schemas", async () => {
   })
 
   const tool = (await Effect.runPromise(toolEffect)) as any
-  expect(tool.inputSchema.safeParse({ pair: [1] }).success).toBe(true)
-  expect(tool.inputSchema.safeParse({ pair: [1, 2] }).success).toBe(true)
+  const inputSchema = z.object(tool.inputSchema)
+  expect(inputSchema.safeParse({ pair: [1] }).success).toBe(true)
+  expect(inputSchema.safeParse({ pair: [1, 2] }).success).toBe(true)
 })
