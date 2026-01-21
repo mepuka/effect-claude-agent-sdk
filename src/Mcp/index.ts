@@ -5,6 +5,7 @@ import {
 import * as Effect from "effect/Effect"
 import * as Runtime from "effect/Runtime"
 import * as Schema from "effect/Schema"
+import type * as Scope from "effect/Scope"
 import { McpError } from "../Errors.js"
 import type { CallToolResult } from "../Schema/External.js"
 import * as Tool from "../Tools/Tool.js"
@@ -362,20 +363,22 @@ export const toolsFromToolkit = <
     )
   })
 
-export type CreateSdkMcpServerOptions = {
+export type CreateSdkMcpServerOptions<R = never> = {
   readonly name: string
   readonly version?: string
   readonly tools?: ReadonlyArray<
-    ReturnType<typeof sdkTool> | Effect.Effect<ReturnType<typeof sdkTool>, McpError, any>
+    ReturnType<typeof sdkTool> | Effect.Effect<ReturnType<typeof sdkTool>, McpError, R>
   >
 }
 
 /**
  * Create an MCP server using SDK tooling (optionally with Effect-built tools).
  */
-export const createSdkMcpServer = Effect.fn("Mcp.createSdkMcpServer")(function*(
-  options: CreateSdkMcpServerOptions
-) {
+export const createSdkMcpServer: <R = never>(
+  options: CreateSdkMcpServerOptions<R>
+) => Effect.Effect<ReturnType<typeof sdkCreateSdkMcpServer>, McpError, R> = Effect.fn(
+  "Mcp.createSdkMcpServer"
+)(function*<R>(options: CreateSdkMcpServerOptions<R>) {
   const tools = options.tools
     ? yield* Effect.forEach(options.tools, (entry) =>
         Effect.isEffect(entry) ? entry : Effect.succeed(entry)
@@ -394,4 +397,36 @@ export const createSdkMcpServer = Effect.fn("Mcp.createSdkMcpServer")(function*(
         cause
       })
   })
+})
+
+const closeSdkMcpServer = (server: { readonly instance?: { close?: () => Promise<void> } }) =>
+  Effect.tryPromise({
+    try: async () => {
+      if (server.instance?.close) {
+        await server.instance.close()
+      }
+    },
+    catch: (cause) =>
+      McpError.make({
+        message: "Failed to close SDK MCP server",
+        cause
+      })
+  }).pipe(Effect.ignore)
+
+/**
+ * Create an MCP server scoped to the current Effect scope.
+ */
+export const createSdkMcpServerScoped: <R = never>(
+  options: CreateSdkMcpServerOptions<R>
+) => Effect.Effect<
+  ReturnType<typeof sdkCreateSdkMcpServer>,
+  McpError,
+  R | Scope.Scope
+> = Effect.fn("Mcp.createSdkMcpServerScoped")(function*<R>(
+  options: CreateSdkMcpServerOptions<R>
+) {
+  return yield* Effect.acquireRelease(
+    createSdkMcpServer(options),
+    closeSdkMcpServer
+  )
 })

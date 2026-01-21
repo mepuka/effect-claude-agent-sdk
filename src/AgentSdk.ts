@@ -50,6 +50,9 @@ export class AgentSdk extends Context.Tag("@effect/claude-agent-sdk/AgentSdk")<
     readonly createSdkMcpServer: (
       options: CreateSdkMcpServerOptions
     ) => Effect.Effect<McpSdkServerConfigWithInstance, AgentSdkError>
+    readonly createSdkMcpServerScoped: (
+      options: CreateSdkMcpServerOptions
+    ) => Effect.Effect<McpSdkServerConfigWithInstance, AgentSdkError, Scope.Scope>
   }
 >() {
   /**
@@ -133,9 +136,34 @@ export class AgentSdk extends Context.Tag("@effect/claude-agent-sdk/AgentSdk")<
         })
       })
 
+      const closeSdkMcpServer = (server: McpSdkServerConfigWithInstance) =>
+        Effect.tryPromise({
+          try: async () => {
+            const instance = server.instance as { close?: () => Promise<void> }
+            if (instance?.close) {
+              await instance.close()
+            }
+          },
+          catch: (cause) =>
+            McpError.make({
+              message: "Failed to close SDK MCP server",
+              cause
+            })
+        }).pipe(Effect.ignore)
+
+      const createSdkMcpServerScoped = Effect.fn("AgentSdk.createSdkMcpServerScoped")(function*(
+        options: CreateSdkMcpServerOptions
+      ) {
+        return yield* Effect.acquireRelease(
+          createSdkMcpServer(options),
+          closeSdkMcpServer
+        )
+      })
+
       return AgentSdk.of({
         query,
-        createSdkMcpServer
+        createSdkMcpServer,
+        createSdkMcpServerScoped
       })
     })
   )

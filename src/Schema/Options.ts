@@ -99,7 +99,9 @@ export const AgentMcpServerSpec = withIdentifier(
 export type AgentMcpServerSpec = typeof AgentMcpServerSpec.Type
 export type AgentMcpServerSpecEncoded = typeof AgentMcpServerSpec.Encoded
 
-const HookMap = Schema.Record({ key: HookEvent, value: Schema.Array(HookCallbackMatcher) })
+const HookMap = Schema.Record({ key: HookEvent, value: Schema.Array(HookCallbackMatcher) }).pipe(
+  Schema.partial
+)
 
 export const Options = withIdentifier(
   Schema.Struct({

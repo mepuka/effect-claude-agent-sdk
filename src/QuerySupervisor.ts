@@ -482,12 +482,16 @@ export class QuerySupervisor extends Context.Tag("@effect/claude-agent-sdk/Query
    * Convenience layer that wires QuerySupervisorConfig from defaults.
    */
   static readonly layerDefault = QuerySupervisor.layer.pipe(
-    Layer.provide(QuerySupervisorConfig.layer)
+    Layer.provide(QuerySupervisorConfig.layer),
+    Layer.provide(AgentSdk.layerDefault)
   )
 
   /**
    * Convenience layer that reads QuerySupervisorConfig from environment variables.
    */
   static readonly layerDefaultFromEnv = (prefix = "AGENTSDK") =>
-    QuerySupervisor.layer.pipe(Layer.provide(QuerySupervisorConfig.layerFromEnv(prefix)))
+    QuerySupervisor.layer.pipe(
+      Layer.provide(QuerySupervisorConfig.layerFromEnv(prefix)),
+      Layer.provide(AgentSdk.layerDefaultFromEnv(prefix))
+    )
 }

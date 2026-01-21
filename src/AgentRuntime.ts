@@ -149,12 +149,16 @@ export class AgentRuntime extends Context.Tag("@effect/claude-agent-sdk/AgentRun
    * Convenience layer that wires AgentRuntimeConfig from defaults.
    */
   static readonly layerDefault = AgentRuntime.layer.pipe(
-    Layer.provide(AgentRuntimeConfig.layer)
+    Layer.provide(AgentRuntimeConfig.layer),
+    Layer.provide(QuerySupervisor.layerDefault)
   )
 
   /**
    * Convenience layer that reads AgentRuntimeConfig from environment variables.
    */
   static readonly layerDefaultFromEnv = (prefix = "AGENTSDK") =>
-    AgentRuntime.layer.pipe(Layer.provide(AgentRuntimeConfig.layerFromEnv(prefix)))
+    AgentRuntime.layer.pipe(
+      Layer.provide(AgentRuntimeConfig.layerFromEnv(prefix)),
+      Layer.provide(QuerySupervisor.layerDefaultFromEnv(prefix))
+    )
 }

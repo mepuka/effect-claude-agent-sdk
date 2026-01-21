@@ -79,7 +79,7 @@ const program = Effect.gen(function* () {
 
   // Get stats about active queries
   const stats = yield* runtime.stats
-  console.log(`Active queries: ${stats.activeCount}`)
+  console.log(`Active queries: ${stats.active}`)
 
   // Stream responses directly
   yield* runtime
@@ -98,9 +98,11 @@ Both services return a `QueryHandle` for controlling the query:
 ```ts
 interface QueryHandle {
   readonly stream: Stream.Stream<SDKMessage, AgentSdkError>
+  readonly send: (message: SDKUserMessage) => Effect.Effect<void, AgentSdkError>
+  readonly sendAll: (messages: Iterable<SDKUserMessage>) => Effect.Effect<void, AgentSdkError>
+  readonly sendForked: (message: SDKUserMessage) => Effect.Effect<void, AgentSdkError, Scope.Scope>
+  readonly closeInput: Effect.Effect<void, AgentSdkError>
   readonly interrupt: Effect.Effect<void, AgentSdkError>
-  readonly closeInput: Effect.Effect<void>
-  readonly sendUserMessage: (message: SDKUserMessage) => Effect.Effect<void, AgentSdkError>
 }
 ```
 

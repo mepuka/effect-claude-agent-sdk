@@ -10,3 +10,5 @@ Status: Source Dive Complete
 - Phase 5: v2 Session Wrappers (`docs/plan/phase-5-v2-sessions.md`)
 - Phase 6: Experimental Enhancements (`docs/plan/phase-6-experimental.md`)
 - Phase 7: Hardening, Docs, Examples (`docs/plan/phase-7-hardening-docs.md`)
+- Phase 8: Agent Runtime + Query Supervisor (`docs/plan/phase-8-agent-runtime-query-supervisor.md`)
+- Phase 9: Gap Closure + Hardening (`docs/plan/phase-9-gap-closure.md`)
