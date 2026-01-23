@@ -1,5 +1,11 @@
 # effect-claude-agent-sdk
 
+## 0.3.1
+
+### Patch Changes
+
+- Republish session layer updates
+
 ## 0.3.0
 
 ### Minor Changes
