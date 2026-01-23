@@ -12,6 +12,9 @@
   - `LoggingMatch` combinators for building custom message handlers
   - `LoggingStream` utilities for streaming log transformations
 
+### Patch Changes
+
+- e3404d7: Add session config defaults, manager/service layers, and session docs/tests
 ## 0.2.0
 
 ### Minor Changes

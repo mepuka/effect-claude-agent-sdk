@@ -402,6 +402,10 @@ Guidance:
 | `AgentSdk.layerDefaultFromEnv(prefix)` | SDK from environment with custom prefix |
 | `AgentRuntime.layerDefault` | Default runtime with supervision |
 | `AgentRuntime.layerDefaultFromEnv(prefix)` | Runtime from environment |
+| `SessionManager.layerDefault` | Session manager with default SessionConfig |
+| `SessionManager.layerDefaultFromEnv(prefix)` | Session manager from environment |
+| `SessionService.layerDefault(options)` | Scoped session service with defaults |
+| `SessionService.layerDefaultFromEnv(options, prefix)` | Scoped session service from environment |
 
 ## Examples
 
