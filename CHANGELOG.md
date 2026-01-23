@@ -1,5 +1,11 @@
 # effect-claude-agent-sdk
 
+## 0.4.0
+
+### Minor Changes
+
+- 7f5dc11: add storage module for chat history, artifacts, and audit log persistence
+
 ## 0.3.1
 
 ### Patch Changes
@@ -21,6 +27,7 @@
 ### Patch Changes
 
 - e3404d7: Add session config defaults, manager/service layers, and session docs/tests
+
 ## 0.2.0
 
 ### Minor Changes
