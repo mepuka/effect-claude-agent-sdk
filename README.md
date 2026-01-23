@@ -340,6 +340,37 @@ const program = Effect.scoped(
 )
 ```
 
+### Sessions (v2)
+
+```ts
+import { SessionManager, SessionService } from "effect-claude-agent-sdk"
+import * as Effect from "effect/Effect"
+import * as Stream from "effect/Stream"
+
+const program = Effect.scoped(
+  Effect.gen(function* () {
+    const session = yield* SessionService
+    yield* session.send("hello")
+    return yield* Stream.runCollect(session.stream)
+  }).pipe(
+    Effect.provide(SessionService.layerDefault({
+      model: "claude-sonnet-4-5-20250929"
+    }))
+  )
+)
+```
+
+Session configuration (via `SessionManager.layerDefaultFromEnv`) supports:
+`EXECUTABLE`, `PATH_TO_CLAUDE_CODE_EXECUTABLE`, `EXECUTABLE_ARGS`,
+`PERMISSION_MODE`, `ALLOWED_TOOLS`, `DISALLOWED_TOOLS`,
+`ANTHROPIC_API_KEY`/`API_KEY`, `CLAUDE_CODE_SESSION_ACCESS_TOKEN`.
+
+Guidance:
+- Use `SessionService` or `SessionManager` for normal app usage (applies
+  SessionConfig defaults and validates required `model`).
+- Use the low-level `Session` module when you want to manage every option
+  explicitly; it does not read SessionConfig defaults.
+
 ## API Reference
 
 ### Services
@@ -349,6 +380,8 @@ const program = Effect.scoped(
 | `AgentSdk` | Low-level SDK wrapper with `query()` and `createSdkMcpServer()` |
 | `AgentRuntime` | High-level runtime with supervision, retries, timeouts |
 | `QuerySupervisor` | Manages concurrent queries and cleanup |
+| `SessionManager` | Session factory that applies SessionConfig defaults |
+| `SessionService` | Scoped Session wrapper for single-session usage |
 
 ### Modules
 
