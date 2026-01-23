@@ -13,3 +13,4 @@ Status: Source Dive Complete
 - Phase 8: Agent Runtime + Query Supervisor (`docs/plan/phase-8-agent-runtime-query-supervisor.md`)
 - Phase 9: Gap Closure + Hardening (`docs/plan/phase-9-gap-closure.md`)
 - Phase 10: Logging + Observability (`docs/plan/phase-10-logging-observability.md`)
+- Phase 11: Persistence + Storage (`docs/plan/phase-11-persistence-storage.md`)

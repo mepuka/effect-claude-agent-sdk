@@ -392,6 +392,7 @@ Guidance:
 | `Hooks` | Hook handlers and matchers |
 | `Logging` | Logging config, matchers, and stream helpers |
 | `Mcp` | MCP server creation utilities |
+| `Storage` | Chat history, artifacts, and audit log persistence |
 | `Experimental` | Rate limiting, persisted queues, event logging |
 
 ### Layers
