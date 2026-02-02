@@ -183,32 +183,28 @@ export const make = (options?: { readonly key?: string }) =>
             }
             const accepted: Array<EventJournal.Entry> = []
             for (const originEntry of compacted) {
-              const entryMillis = EventJournal.entryIdMillis(originEntry.id)
               const conflicts: Array<EventJournal.Entry> = []
-              for (let i = journal.length - 1; i >= -1; i--) {
-                const entry = journal[i]
-                if (entry !== undefined && entry.createdAtMillis > entryMillis) {
-                  continue
+              for (const check of journal) {
+                if (check.event === originEntry.event && check.primaryKey === originEntry.primaryKey) {
+                  conflicts.push(check)
                 }
-                for (let j = i + 2; j < journal.length; j++) {
-                  const check = journal[j]!
-                  if (check.event === originEntry.event && check.primaryKey === originEntry.primaryKey) {
-                    conflicts.push(check)
-                  }
+              }
+              for (const check of accepted) {
+                if (check.event === originEntry.event && check.primaryKey === originEntry.primaryKey) {
+                  conflicts.push(check)
                 }
-                let resolution = resolveDefaultConflict(originEntry, conflicts)
-                if (conflicts.length > 0) {
-                  resolution = yield* resolveConflict(originEntry, conflicts)
-                  yield* emitConflict(originEntry, conflicts, resolution)
+              }
+              let resolution = resolveDefaultConflict(originEntry, conflicts)
+              if (conflicts.length > 0) {
+                resolution = yield* resolveConflict(originEntry, conflicts)
+                yield* emitConflict(originEntry, conflicts, resolution)
+              }
+              if (resolution._tag !== "reject") {
+                const resolvedEntry = resolution.entry
+                if (!byId.has(resolvedEntry.idString)) {
+                  yield* options.effect({ entry: resolvedEntry, conflicts })
+                  accepted.push(resolvedEntry)
                 }
-                if (resolution._tag !== "reject") {
-                  const resolvedEntry = resolution.entry
-                  if (!byId.has(resolvedEntry.idString)) {
-                    yield* options.effect({ entry: resolvedEntry, conflicts })
-                    accepted.push(resolvedEntry)
-                  }
-                }
-                break
               }
             }
             for (const entry of accepted) {

@@ -106,7 +106,11 @@ function make() {
         return next
       })
 
-    const runTracked = <R>(key: string, effect: Effect.Effect<void, never, R>) =>
+    const runTracked = <R>(
+      key: string,
+      effect: Effect.Effect<void, never, R>,
+      options?: { readonly onlyIfMissing?: boolean }
+    ) =>
       FiberMap.run(
         fibers,
         key,
@@ -117,7 +121,7 @@ function make() {
           ),
           scope
         ),
-        { onlyIfMissing: true }
+        { onlyIfMissing: options?.onlyIfMissing ?? true }
       )
 
     const registerConnector = (key: string, effect: Effect.Effect<void, never, Scope.Scope>) =>
@@ -139,8 +143,14 @@ function make() {
       effect: Effect.Effect<void, never, Scope.Scope>
     ) {
       yield* registerConnector(key, effect)
+      const hasFiber = yield* FiberMap.has(fibers, key)
+      if (hasFiber) {
+        const statusMap = yield* Ref.get(statusRef)
+        const previous = statusMap.get(key)
+        if (previous?.connected) return
+      }
+      yield* runTracked(key, effect, { onlyIfMissing: !hasFiber })
       yield* markConnected(key)
-      yield* runTracked(key, effect)
     })
 
     const connect = Effect.fn("SyncService.connect")(function*(
@@ -176,8 +186,8 @@ function make() {
         connectors,
         ([key, effect]) =>
           FiberMap.remove(fibers, key).pipe(
-            Effect.zipRight(markConnected(key)),
-            Effect.zipRight(runTracked(key, effect))
+            Effect.zipRight(runTracked(key, effect, { onlyIfMissing: false })),
+            Effect.zipRight(markConnected(key))
           ),
         { discard: true }
       )
