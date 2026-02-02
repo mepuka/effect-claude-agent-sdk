@@ -109,6 +109,7 @@ function make() {
     const encryption = yield* EventLogEncryption.EventLogEncryption
     const webSocketConstructor = yield* Socket.WebSocketConstructor
     const fibers = yield* FiberMap.make<string>()
+    const syncNowSemaphore = yield* Effect.makeSemaphore(1)
     const statusRef = yield* SubscriptionRef.make<Map<string, RemoteStatus>>(new Map())
     const connectorsRef = yield* Ref.make<Map<string, {
       readonly effect: Effect.Effect<void, never, Scope.Scope>
@@ -305,7 +306,6 @@ function make() {
         if (previous?.connected) return
       }
       yield* runTracked(key, effect, { onlyIfMissing: !hasFiber })
-      yield* markConnected(key, kind, url)
     })
 
     const wrapMailbox = <A, E>(mailbox: Mailbox.ReadonlyMailbox<A, E>, key: string) => {
@@ -342,7 +342,8 @@ function make() {
           const remoteId = remoteIdToString(remote.id)
           const trackedRemote = wrapRemote(remote, key)
           return log.registerRemote(trackedRemote).pipe(
-            Effect.tap(() => updateRemoteId(key, remoteId))
+            Effect.tap(() => updateRemoteId(key, remoteId)),
+            Effect.tap(() => markConnected(key, "url", key))
           )
         }
       })
@@ -356,7 +357,8 @@ function make() {
         key,
         "remoteId",
         log.registerRemote(trackedRemote).pipe(
-          Effect.tap(() => updateRemoteId(key, key))
+          Effect.tap(() => updateRemoteId(key, key)),
+          Effect.tap(() => markConnected(key, "remoteId"))
         )
       )
     })
@@ -388,19 +390,22 @@ function make() {
       disconnect(url)
     )
 
-    const syncNow = Effect.fn("SyncService.syncNow")(function*() {
-      const connectors = yield* Ref.get(connectorsRef)
-      if (connectors.size === 0) return
-      yield* Effect.forEach(
-        connectors,
-        ([key, connector]) =>
-          FiberMap.remove(fibers, key).pipe(
-            Effect.zipRight(runTracked(key, connector.effect, { onlyIfMissing: false })),
-            Effect.zipRight(markConnected(key, connector.kind, connector.url))
-          ),
-        { discard: true }
+    const syncNow = Effect.fn("SyncService.syncNow")(() =>
+      syncNowSemaphore.withPermits(1)(
+        Effect.gen(function*() {
+          const connectors = yield* Ref.get(connectorsRef)
+          if (connectors.size === 0) return
+          yield* Effect.forEach(
+            connectors,
+            ([key, connector]) =>
+              FiberMap.remove(fibers, key).pipe(
+                Effect.zipRight(runTracked(key, connector.effect, { onlyIfMissing: false }))
+              ),
+            { discard: true }
+          )
+        })
       )
-    })
+    )
 
     const status = Effect.fn("SyncService.status")(() =>
       SubscriptionRef.get(statusRef).pipe(

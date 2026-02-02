@@ -67,6 +67,10 @@ export const make = (options?: { readonly key?: string }) =>
     const journal = [...(yield* loadEntries(kv, key))]
     const byId = new Map(journal.map((entry) => [entry.idString, entry]))
     const remotes = new Map<string, { sequence: number; missing: Array<EventJournal.Entry> }>()
+    const journalSemaphore = yield* Effect.makeSemaphore(1)
+
+    const withLock = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+      journalSemaphore.withPermits(1)(effect)
 
     const remoteIdToString = (remoteId: EventJournal.RemoteId) =>
       Array.from(remoteId)
@@ -83,7 +87,7 @@ export const make = (options?: { readonly key?: string }) =>
     }
 
     return EventJournal.EventJournal.of({
-      entries: Effect.sync(() => journal.slice()),
+      entries: withLock(Effect.sync(() => journal.slice())),
       write({ effect, event, payload, primaryKey }) {
         return Effect.acquireUseRelease(
           Effect.sync(() =>
@@ -96,21 +100,23 @@ export const make = (options?: { readonly key?: string }) =>
           ),
           effect,
           (entry, exit) =>
-            Effect.suspend(() => {
-              if (exit._tag === "Failure" || byId.has(entry.idString)) return Effect.void
-              journal.push(entry)
-              byId.set(entry.idString, entry)
-              remotes.forEach((remote) => {
-                remote.missing.push(entry)
+            withLock(
+              Effect.suspend(() => {
+                if (exit._tag === "Failure" || byId.has(entry.idString)) return Effect.void
+                journal.push(entry)
+                byId.set(entry.idString, entry)
+                remotes.forEach((remote) => {
+                  remote.missing.push(entry)
+                })
+                return persistEntries(kv, key, journal).pipe(
+                  Effect.zipRight(pubsub.publish(entry))
+                )
               })
-              return persistEntries(kv, key, journal).pipe(
-                Effect.zipRight(pubsub.publish(entry))
-              )
-            }).pipe(Effect.catchAll(() => Effect.void))
+            ).pipe(Effect.catchAll(() => Effect.void))
         )
       },
       writeFromRemote: (options) =>
-        Effect.gen(function*() {
+        withLock(Effect.gen(function*() {
           const remote = ensureRemote(options.remoteId)
           const uncommittedRemotes: Array<EventJournal.RemoteEntry> = []
           const uncommitted: Array<EventJournal.Entry> = []
@@ -222,13 +228,13 @@ export const make = (options?: { readonly key?: string }) =>
           }
 
           yield* persistEntries(kv, key, journal)
-        }),
+        })),
       withRemoteUncommited: (remoteId, f) =>
         Effect.acquireUseRelease(
-          Effect.sync(() => ensureRemote(remoteId).missing.slice()),
+          withLock(Effect.sync(() => ensureRemote(remoteId).missing.slice())),
           f,
           (entries, exit) =>
-            Effect.sync(() => {
+            withLock(Effect.sync(() => {
               if (exit._tag === "Failure") return
               const last = entries[entries.length - 1]
               if (!last) return
@@ -240,19 +246,21 @@ export const make = (options?: { readonly key?: string }) =>
                   break
                 }
               }
-            })
+            }))
         ),
       nextRemoteSequence: (remoteId) =>
-        Effect.sync(() => ensureRemote(remoteId).sequence),
+        withLock(Effect.sync(() => ensureRemote(remoteId).sequence)),
       changes: PubSub.subscribe(pubsub),
-      destroy: kv.remove(key).pipe(
-        Effect.mapError((cause) => toJournalError("destroy", cause)),
-        Effect.tap(() =>
-          Effect.sync(() => {
-            journal.length = 0
-            byId.clear()
-            remotes.clear()
-          })
+      destroy: withLock(
+        kv.remove(key).pipe(
+          Effect.mapError((cause) => toJournalError("destroy", cause)),
+          Effect.tap(() =>
+            Effect.sync(() => {
+              journal.length = 0
+              byId.clear()
+              remotes.clear()
+            })
+          )
         )
       )
     })
