@@ -2,6 +2,7 @@ import * as Context from "effect/Context"
 import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
 import * as Schema from "effect/Schema"
+import * as Stream from "effect/Stream"
 import type * as Scope from "effect/Scope"
 import { ConfigError } from "./Errors.js"
 import { SessionConfig, type SessionDefaults } from "./SessionConfig.js"
@@ -12,8 +13,9 @@ import {
   SessionError,
   type SessionHandle
 } from "./Session.js"
-import type { SDKResultMessage } from "./Schema/Message.js"
+import type { SDKMessage, SDKResultMessage, SDKUserMessage } from "./Schema/Message.js"
 import type { SDKSessionOptions } from "./Schema/Session.js"
+import type { SessionService } from "./SessionService.js"
 
 export const SessionManagerError = Schema.Union(SessionError, ConfigError)
 
@@ -46,6 +48,27 @@ const requireModel = (options: SDKSessionOptions) =>
         })
       )
 
+type SessionServiceApi = Context.Tag.Service<typeof SessionService>
+
+const makeTurn = (
+  send: (message: string | SDKUserMessage) => Effect.Effect<void, SessionError>,
+  stream: Stream.Stream<SDKMessage, SessionError>
+) => {
+  const turnEffect = Effect.fn("SessionManager.turn")(
+    (message: string | SDKUserMessage) => send(message).pipe(Effect.as(stream))
+  )
+  return (message: string | SDKUserMessage) => Stream.unwrap(turnEffect(message))
+}
+
+const makeSessionService = (handle: SessionHandle): SessionServiceApi => ({
+  handle,
+  sessionId: handle.sessionId,
+  send: handle.send,
+  turn: makeTurn(handle.send, handle.stream),
+  stream: handle.stream,
+  close: handle.close
+})
+
 export class SessionManager extends Context.Tag("@effect/claude-agent-sdk/SessionManager")<
   SessionManager,
   {
@@ -63,6 +86,10 @@ export class SessionManager extends Context.Tag("@effect/claude-agent-sdk/Sessio
       message: string,
       options: SDKSessionOptions
     ) => Effect.Effect<SDKResultMessage, SessionError | ConfigError>
+    readonly withSession: <A, E, R>(
+      options: SDKSessionOptions,
+      use: (session: SessionServiceApi) => Effect.Effect<A, E, R>
+    ) => Effect.Effect<A, E | SessionError | ConfigError, R>
   }
 >() {
   /**
@@ -99,10 +126,24 @@ export class SessionManager extends Context.Tag("@effect/claude-agent-sdk/Sessio
           )
       )
 
+      const withSession = Effect.fn("SessionManager.withSession")(
+        <A, E, R>(
+          options: SDKSessionOptions,
+          use: (session: SessionServiceApi) => Effect.Effect<A, E, R>
+        ) =>
+          Effect.scoped(
+            Effect.gen(function*() {
+              const handle = yield* create(options)
+              return yield* use(makeSessionService(handle))
+            })
+          )
+      )
+
       return SessionManager.of({
         create,
         resume,
-        prompt: promptMessage
+        prompt: promptMessage,
+        withSession
       })
     })
   )

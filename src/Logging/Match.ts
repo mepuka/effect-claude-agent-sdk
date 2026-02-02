@@ -200,23 +200,75 @@ export const matchSdkMessage = Match.type<SDKMessage>().pipe(
       }
     })
   ),
+  Match.when({ type: "system", subtype: "hook_started" }, (message) =>
+    makeSdkEvent(message, {
+      level: LogLevel.Debug,
+      event: "sdk.message.system.hook_started",
+      messageText: "hook started",
+      annotations: {
+        hook_id: message.hook_id,
+        hook_name: message.hook_name,
+        hook_event: message.hook_event
+      }
+    })
+  ),
+  Match.when({ type: "system", subtype: "hook_progress" }, (message) =>
+    makeSdkEvent(message, {
+      level: LogLevel.Debug,
+      event: "sdk.message.system.hook_progress",
+      messageText: "hook progress",
+      annotations: {
+        hook_id: message.hook_id,
+        hook_name: message.hook_name,
+        hook_event: message.hook_event
+      },
+      data: {
+        hook_id: message.hook_id,
+        hook_name: message.hook_name,
+        hook_event: message.hook_event,
+        output_preview: previewText(message.output),
+        stdout_preview: previewText(message.stdout),
+        stderr_preview: previewText(message.stderr),
+        output_length: message.output.length,
+        stdout_length: message.stdout.length,
+        stderr_length: message.stderr.length
+      }
+    })
+  ),
   Match.when({ type: "system", subtype: "hook_response" }, (message) =>
     makeSdkEvent(message, {
       level: LogLevel.Debug,
       event: "sdk.message.system.hook_response",
       messageText: "hook response",
       annotations: {
+        hook_id: message.hook_id,
         hook_name: message.hook_name,
         hook_event: message.hook_event
       },
       data: {
+        hook_id: message.hook_id,
         hook_name: message.hook_name,
         hook_event: message.hook_event,
         exit_code: message.exit_code,
+        outcome: message.outcome,
+        output_preview: previewText(message.output),
         stdout_preview: previewText(message.stdout),
         stderr_preview: previewText(message.stderr),
+        output_length: message.output.length,
         stdout_length: message.stdout.length,
         stderr_length: message.stderr.length
+      }
+    })
+  ),
+  Match.when({ type: "system", subtype: "files_persisted" }, (message) =>
+    makeSdkEvent(message, {
+      level: LogLevel.Info,
+      event: "sdk.message.system.files_persisted",
+      messageText: "files persisted",
+      data: {
+        processed_at: message.processed_at,
+        files: message.files,
+        failed: message.failed
       }
     })
   ),
@@ -267,6 +319,17 @@ export const matchSdkMessage = Match.type<SDKMessage>().pipe(
         tool_name: message.tool_name,
         parent_tool_use_id: message.parent_tool_use_id,
         elapsed_time_seconds: message.elapsed_time_seconds
+      }
+    })
+  ),
+  Match.when({ type: "tool_use_summary" }, (message) =>
+    makeSdkEvent(message, {
+      level: LogLevel.Info,
+      event: "sdk.message.tool_use_summary",
+      messageText: "tool use summary",
+      data: {
+        summary: message.summary,
+        preceding_tool_use_ids: message.preceding_tool_use_ids
       }
     })
   ),

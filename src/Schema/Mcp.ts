@@ -90,7 +90,7 @@ export type McpServerConfigForProcessTransportEncoded = typeof McpServerConfigFo
 export const McpServerStatus = withIdentifier(
   Schema.Struct({
     name: Schema.String,
-    status: Schema.Literal("connected", "failed", "needs-auth", "pending"),
+    status: Schema.Literal("connected", "failed", "needs-auth", "pending", "disabled"),
     serverInfo: Schema.optional(
       Schema.Struct({
         name: Schema.String,

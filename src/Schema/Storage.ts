@@ -16,6 +16,14 @@ export class ChatEvent extends Schema.Class<ChatEvent>("ChatEvent")({
 
 export type ChatEventEncoded = typeof ChatEvent.Encoded
 
+export class SessionMeta extends Schema.Class<SessionMeta>("SessionMeta")({
+  sessionId: Schema.String,
+  createdAt: Schema.Number,
+  updatedAt: Schema.Number
+}) {}
+
+export type SessionMetaEncoded = typeof SessionMeta.Encoded
+
 export const ArtifactEncoding = Schema.Literal("utf8", "base64")
 export type ArtifactEncoding = typeof ArtifactEncoding.Type
 export type ArtifactEncodingEncoded = typeof ArtifactEncoding.Encoded
