@@ -23,7 +23,16 @@ test("SessionService.layer wires SessionManager and exposes handle methods", asy
       return Effect.succeed(handle)
     },
     resume: (_sessionId, _options) => Effect.succeed(handle),
-    prompt: (_message, _options) => Effect.succeed({} as SDKResultMessage)
+    prompt: (_message, _options) => Effect.succeed({} as SDKResultMessage),
+    withSession: (_options, use) =>
+      use({
+        handle,
+        sessionId: handle.sessionId,
+        send: handle.send,
+        turn: (_message) => Stream.empty,
+        stream: handle.stream,
+        close: handle.close
+      })
   })
 
   const layer = SessionService.layer({ model: "claude-test" }).pipe(

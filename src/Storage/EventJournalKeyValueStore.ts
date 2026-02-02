@@ -5,8 +5,9 @@ import * as Layer from "effect/Layer"
 import * as Option from "effect/Option"
 import * as PubSub from "effect/PubSub"
 import * as Schema from "effect/Schema"
+import { defaultAuditEventJournalKey } from "./defaults.js"
 
-const defaultKey = "claude-agent-sdk/event-journal"
+const defaultKey = defaultAuditEventJournalKey
 
 const toJournalError = (method: string, cause: unknown) =>
   new EventJournal.EventJournalError({ method, cause })

@@ -1,10 +1,19 @@
 import * as EventLogModule from "@effect/experimental/EventLog"
 import * as EventJournal from "@effect/experimental/EventJournal"
+import { KeyValueStore } from "@effect/platform"
+import { BunKeyValueStore } from "@effect/platform-bun"
 import * as Context from "effect/Context"
 import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
+import * as Option from "effect/Option"
 import type { HookEvent } from "../Schema/Hooks.js"
 import { AuditEventSchema, layerAuditHandlers } from "../experimental/EventLog.js"
+import {
+  defaultAuditEventJournalKey,
+  defaultAuditIdentityKey,
+  defaultStorageDirectory
+} from "./defaults.js"
+import { StorageConfig } from "./StorageConfig.js"
 import { StorageError, toStorageError } from "./StorageError.js"
 import { layerKeyValueStore as layerEventJournalKeyValueStore } from "./EventJournalKeyValueStore.js"
 
@@ -43,17 +52,43 @@ const storeName = "AuditEventStore"
 const mapError = (operation: string, cause: unknown) =>
   toStorageError(storeName, operation, cause)
 
+const resolveEnabled = Effect.gen(function*() {
+  const config = yield* Effect.serviceOption(StorageConfig)
+  return Option.isNone(config) ? true : config.value.settings.enabled.auditLog
+})
+
+const resolveAuditKeys = (options?: {
+  readonly journalKey?: string
+  readonly identityKey?: string
+  readonly prefix?: string
+}) => ({
+  journalKey:
+    options?.journalKey ??
+    (options?.prefix
+      ? `${options.prefix}/event-journal`
+      : defaultAuditEventJournalKey),
+  identityKey:
+    options?.identityKey ??
+    (options?.prefix
+      ? `${options.prefix}/event-log-identity`
+      : defaultAuditIdentityKey)
+})
+
 const makeStore = Effect.gen(function*() {
   const log = yield* EventLogModule.EventLog
 
   const write = Effect.fn("AuditEventStore.write")((input: AuditEventInput) =>
-    log.write({
-      schema: AuditEventSchema,
-      event: input.event,
-      payload: input.payload
-    }).pipe(
-      Effect.mapError((cause) => mapError("write", cause))
-    )
+    Effect.gen(function*() {
+      const enabled = yield* resolveEnabled
+      if (!enabled) return
+      yield* log.write({
+        schema: AuditEventSchema,
+        event: input.event,
+        payload: input.payload
+      }).pipe(
+        Effect.mapError((cause) => mapError("write", cause))
+      )
+    })
   )
 
   const entries = log.entries.pipe(
@@ -68,6 +103,7 @@ export class AuditEventStore extends Context.Tag("@effect/claude-agent-sdk/Audit
   {
     readonly write: (input: AuditEventInput) => Effect.Effect<void, StorageError>
     readonly entries: Effect.Effect<ReadonlyArray<EventJournal.Entry>, StorageError>
+    readonly cleanup?: () => Effect.Effect<void, StorageError>
   }
 >() {
   static readonly layerMemory = Layer.effect(
@@ -96,9 +132,37 @@ export class AuditEventStore extends Context.Tag("@effect/claude-agent-sdk/Audit
             )
           ),
           Layer.provide(EventLogModule.layerIdentityKvs({
-            key: options?.identityKey ?? "claude-agent-sdk/event-log-identity"
+            key: options?.identityKey ?? defaultAuditIdentityKey
           })),
           Layer.provide(layerAuditHandlers)
+        )
+      )
+    )
+
+  static readonly layerFileSystem = (options?: {
+    readonly directory?: string
+    readonly journalKey?: string
+    readonly identityKey?: string
+    readonly prefix?: string
+  }) =>
+    AuditEventStore.layerKeyValueStore(resolveAuditKeys(options)).pipe(
+      Layer.provide(
+        KeyValueStore.layerFileSystem(
+          options?.directory ?? defaultStorageDirectory
+        )
+      )
+    )
+
+  static readonly layerFileSystemBun = (options?: {
+    readonly directory?: string
+    readonly journalKey?: string
+    readonly identityKey?: string
+    readonly prefix?: string
+  }) =>
+    AuditEventStore.layerKeyValueStore(resolveAuditKeys(options)).pipe(
+      Layer.provide(
+        BunKeyValueStore.layerFileSystem(
+          options?.directory ?? defaultStorageDirectory
         )
       )
     )

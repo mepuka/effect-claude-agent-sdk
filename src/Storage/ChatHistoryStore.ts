@@ -1,6 +1,8 @@
 import { KeyValueStore } from "@effect/platform"
+import { BunKeyValueStore } from "@effect/platform-bun"
 import * as Clock from "effect/Clock"
 import * as Context from "effect/Context"
+import * as Duration from "effect/Duration"
 import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
 import * as Option from "effect/Option"
@@ -9,7 +11,10 @@ import * as SynchronizedRef from "effect/SynchronizedRef"
 import * as Schema from "effect/Schema"
 import type { SDKMessage } from "../Schema/Message.js"
 import { ChatEvent, ChatEventSource } from "../Schema/Storage.js"
+import { defaultChatHistoryPrefix, defaultStorageDirectory } from "./defaults.js"
+import { StorageConfig } from "./StorageConfig.js"
 import { StorageError, toStorageError } from "./StorageError.js"
+import { SessionIndexStore } from "./SessionIndexStore.js"
 
 export type ChatHistoryAppendOptions = {
   readonly timestamp?: number
@@ -108,6 +113,70 @@ const normalizeRange = (
   }
 }
 
+const resolveListLimit = (options: ChatHistoryListOptions | undefined, fallback?: number) =>
+  options?.limit ?? fallback
+
+type ChatRetention = {
+  readonly maxEvents?: number
+  readonly maxAgeMs?: number
+}
+
+const resolveRetention = Effect.gen(function*() {
+  const config = yield* Effect.serviceOption(StorageConfig)
+  if (Option.isNone(config)) return undefined
+  const retention = config.value.settings.retention.chat
+  return {
+    maxEvents: retention.maxEvents,
+    maxAgeMs: Duration.toMillis(retention.maxAge)
+  } satisfies ChatRetention
+})
+
+const resolveEnabled = Effect.gen(function*() {
+  const config = yield* Effect.serviceOption(StorageConfig)
+  return Option.isNone(config) ? true : config.value.settings.enabled.chatHistory
+})
+
+const touchSessionIndex = (sessionId: string, timestamp: number) =>
+  Effect.serviceOption(SessionIndexStore).pipe(
+    Effect.flatMap((maybe) =>
+      Option.isNone(maybe)
+        ? Effect.void
+        : maybe.value.touch(sessionId, { updatedAt: timestamp }).pipe(Effect.asVoid)
+    ),
+    Effect.catchAll(() => Effect.void)
+  )
+
+const removeSessionIndex = (sessionId: string) =>
+  Effect.serviceOption(SessionIndexStore).pipe(
+    Effect.flatMap((maybe) =>
+      Option.isNone(maybe)
+        ? Effect.void
+        : maybe.value.remove(sessionId).pipe(Effect.asVoid)
+    ),
+    Effect.catchAll(() => Effect.void)
+  )
+
+const applyRetention = (
+  events: ReadonlyArray<ChatEvent>,
+  retention: ChatRetention | undefined,
+  now: number
+) => {
+  if (!retention) return events
+  let filtered = events
+  if (retention.maxAgeMs !== undefined) {
+    const cutoff = now - retention.maxAgeMs
+    filtered = filtered.filter((event) => event.timestamp >= cutoff)
+  }
+  if (retention.maxEvents !== undefined) {
+    const maxEvents = retention.maxEvents
+    if (maxEvents <= 0) return []
+    if (filtered.length > maxEvents) {
+      filtered = filtered.slice(filtered.length - maxEvents)
+    }
+  }
+  return filtered
+}
+
 const storeName = "ChatHistoryStore"
 
 export class ChatHistoryStore extends Context.Tag("@effect/claude-agent-sdk/ChatHistoryStore")<
@@ -132,6 +201,7 @@ export class ChatHistoryStore extends Context.Tag("@effect/claude-agent-sdk/Chat
       options?: ChatHistoryListOptions
     ) => Stream.Stream<ChatEvent, StorageError>
     readonly purge: (sessionId: string) => Effect.Effect<void, StorageError>
+    readonly cleanup?: () => Effect.Effect<void, StorageError>
   }
 >() {
   static readonly layerMemory = Layer.effect(
@@ -143,15 +213,22 @@ export class ChatHistoryStore extends Context.Tag("@effect/claude-agent-sdk/Chat
         function*(sessionId: string, message: SDKMessage, options?: ChatHistoryAppendOptions) {
           const timestamp = options?.timestamp ?? (yield* Clock.currentTimeMillis)
           const source = options?.source ?? defaultSource
-          return yield* SynchronizedRef.modify(stateRef, (state) => {
+          const enabled = yield* resolveEnabled
+          if (!enabled) {
+            return makeEvent(sessionId, 0, timestamp, source, message)
+          }
+          const retention = yield* resolveRetention
+          const event = yield* SynchronizedRef.modify(stateRef, (state) => {
             const next = new Map(state)
             const session = next.get(sessionId) ?? emptySessionState
             const sequence = session.lastSequence + 1
             const event = makeEvent(sessionId, sequence, timestamp, source, message)
-            const events = session.events.concat(event)
+            const events = applyRetention(session.events.concat(event), retention, timestamp)
             next.set(sessionId, { lastSequence: sequence, events })
             return [event, next] as const
           })
+          yield* touchSessionIndex(sessionId, timestamp)
+          return event
         }
       )
 
@@ -159,23 +236,30 @@ export class ChatHistoryStore extends Context.Tag("@effect/claude-agent-sdk/Chat
         function*(sessionId: string, messages: Iterable<SDKMessage>, options?: ChatHistoryAppendOptions) {
           const timestamp = options?.timestamp ?? (yield* Clock.currentTimeMillis)
           const source = options?.source ?? defaultSource
+          const enabled = yield* resolveEnabled
           const batch = Array.from(messages)
           if (batch.length === 0) return []
+          if (!enabled) {
+            return batch.map((message) => makeEvent(sessionId, 0, timestamp, source, message))
+          }
+          const retention = yield* resolveRetention
 
-          return yield* SynchronizedRef.modify(stateRef, (state) => {
+          const events = yield* SynchronizedRef.modify(stateRef, (state) => {
             const next = new Map(state)
             const session = next.get(sessionId) ?? emptySessionState
             const startSequence = session.lastSequence
             const events = batch.map((message, index) =>
               makeEvent(sessionId, startSequence + index + 1, timestamp, source, message)
             )
-            const updated = session.events.concat(events)
+            const updated = applyRetention(session.events.concat(events), retention, timestamp)
             next.set(sessionId, {
               lastSequence: startSequence + events.length,
               events: updated
             })
             return [events, next] as const
           })
+          yield* touchSessionIndex(sessionId, timestamp)
+          return events
         }
       )
 
@@ -183,10 +267,22 @@ export class ChatHistoryStore extends Context.Tag("@effect/claude-agent-sdk/Chat
         sessionId: string,
         options?: ChatHistoryListOptions
       ) {
+        const config = yield* Effect.serviceOption(StorageConfig)
+        const defaultLimit = Option.getOrUndefined(
+          Option.map(config, (value) => value.settings.pagination.chatPageSize)
+        )
         const state = yield* SynchronizedRef.get(stateRef)
         const session = state.get(sessionId)
         if (!session) return []
-        const { start, end, limit, reverse } = normalizeRange(session.lastSequence, options)
+        const limitOverride = resolveListLimit(options, defaultLimit)
+        const rangeOptions =
+          limitOverride === undefined
+            ? options
+            : { ...(options ?? {}), limit: limitOverride }
+        const { start, end, limit, reverse } = normalizeRange(
+          session.lastSequence,
+          rangeOptions
+        )
         if (limit <= 0) return []
         let events = session.events.filter((event) => event.sequence >= start && event.sequence <= end)
         if (reverse) events = events.slice().reverse()
@@ -202,15 +298,40 @@ export class ChatHistoryStore extends Context.Tag("@effect/claude-agent-sdk/Chat
           const next = new Map(state)
           next.delete(sessionId)
           return next
-        })
+        }).pipe(
+          Effect.tap(() => removeSessionIndex(sessionId))
+        )
       )
+
+      const cleanup = Effect.fn("ChatHistoryStore.cleanup")(function*() {
+        const enabled = yield* resolveEnabled
+        if (!enabled) return
+        const retention = yield* resolveRetention
+        if (!retention) return
+        const now = yield* Clock.currentTimeMillis
+        yield* SynchronizedRef.update(stateRef, (state) => {
+          if (state.size === 0) return state
+          const next = new Map(state)
+          for (const [sessionId, session] of state) {
+            const events = applyRetention(session.events, retention, now)
+            if (events !== session.events) {
+              next.set(sessionId, {
+                lastSequence: session.lastSequence,
+                events
+              })
+            }
+          }
+          return next
+        })
+      })
 
       return ChatHistoryStore.of({
         appendMessage,
         appendMessages,
         list,
         stream,
-        purge
+        purge,
+        cleanup
       })
     })
   )
@@ -220,7 +341,7 @@ export class ChatHistoryStore extends Context.Tag("@effect/claude-agent-sdk/Chat
       ChatHistoryStore,
       Effect.gen(function*() {
         const kv = yield* KeyValueStore.KeyValueStore
-        const prefix = options?.prefix ?? "claude-agent-sdk/chat-history"
+        const prefix = options?.prefix ?? defaultChatHistoryPrefix
         const eventStore = kv.forSchema(ChatEvent)
         const metaStore = kv.forSchema(ChatMeta)
 
@@ -246,10 +367,75 @@ export class ChatHistoryStore extends Context.Tag("@effect/claude-agent-sdk/Chat
             )
           )
 
+        const applyRetentionKv = (
+          sessionId: string,
+          lastSequence: number,
+          timestamp: number,
+          retention: ChatRetention | undefined
+        ) =>
+          Effect.gen(function*() {
+            if (!retention) return
+            const removals = new Set<number>()
+
+            if (retention.maxEvents !== undefined) {
+              const maxEvents = retention.maxEvents
+              if (maxEvents <= 0) {
+                for (let seq = 1; seq <= lastSequence; seq += 1) {
+                  removals.add(seq)
+                }
+              } else if (lastSequence > maxEvents) {
+                const limit = lastSequence - maxEvents
+                for (let seq = 1; seq <= limit; seq += 1) {
+                  removals.add(seq)
+                }
+              }
+            }
+
+            if (retention.maxAgeMs !== undefined) {
+              const cutoff = timestamp - retention.maxAgeMs
+              const sequences = range(1, lastSequence, false, lastSequence)
+              const events = yield* Effect.forEach(
+                sequences,
+                (sequence) =>
+                  eventStore.get(eventKey(sessionId, sequence)).pipe(
+                    Effect.mapError((cause) =>
+                      toStorageError(storeName, "retention", cause)
+                    )
+                  ),
+                { discard: false }
+              )
+
+              events.forEach((eventOption, index) => {
+                if (Option.isNone(eventOption)) return
+                if (eventOption.value.timestamp < cutoff) {
+                  removals.add(sequences[index]!)
+                }
+              })
+            }
+
+            if (removals.size === 0) return
+
+            yield* Effect.forEach(
+              Array.from(removals.values()),
+              (sequence) =>
+                eventStore.remove(eventKey(sessionId, sequence)).pipe(
+                  Effect.mapError((cause) =>
+                    toStorageError(storeName, "retention", cause)
+                  )
+                ),
+              { discard: true }
+            )
+          })
+
         const appendMessage = Effect.fn("ChatHistoryStore.appendMessage")(
           function*(sessionId: string, message: SDKMessage, options?: ChatHistoryAppendOptions) {
             const timestamp = options?.timestamp ?? (yield* Clock.currentTimeMillis)
             const source = options?.source ?? defaultSource
+            const enabled = yield* resolveEnabled
+            if (!enabled) {
+              return makeEvent(sessionId, 0, timestamp, source, message)
+            }
+            const retention = yield* resolveRetention
             const meta = yield* loadMeta(sessionId)
             const sequence = meta.lastSequence + 1
             const event = makeEvent(sessionId, sequence, timestamp, source, message)
@@ -259,6 +445,8 @@ export class ChatHistoryStore extends Context.Tag("@effect/claude-agent-sdk/Chat
               )
             )
             yield* saveMeta(sessionId, { lastSequence: sequence, updatedAt: timestamp })
+            yield* applyRetentionKv(sessionId, sequence, timestamp, retention)
+            yield* touchSessionIndex(sessionId, timestamp)
             return event
           }
         )
@@ -267,8 +455,13 @@ export class ChatHistoryStore extends Context.Tag("@effect/claude-agent-sdk/Chat
           function*(sessionId: string, messages: Iterable<SDKMessage>, options?: ChatHistoryAppendOptions) {
             const timestamp = options?.timestamp ?? (yield* Clock.currentTimeMillis)
             const source = options?.source ?? defaultSource
+            const enabled = yield* resolveEnabled
             const batch = Array.from(messages)
             if (batch.length === 0) return []
+            if (!enabled) {
+              return batch.map((message) => makeEvent(sessionId, 0, timestamp, source, message))
+            }
+            const retention = yield* resolveRetention
 
             const meta = yield* loadMeta(sessionId)
             const events = batch.map((message, index) =>
@@ -291,6 +484,8 @@ export class ChatHistoryStore extends Context.Tag("@effect/claude-agent-sdk/Chat
               updatedAt: timestamp
             })
 
+            yield* applyRetentionKv(sessionId, meta.lastSequence + events.length, timestamp, retention)
+            yield* touchSessionIndex(sessionId, timestamp)
             return events
           }
         )
@@ -299,6 +494,10 @@ export class ChatHistoryStore extends Context.Tag("@effect/claude-agent-sdk/Chat
           sessionId: string,
           options?: ChatHistoryListOptions
         ) {
+          const config = yield* Effect.serviceOption(StorageConfig)
+          const defaultLimit = Option.getOrUndefined(
+            Option.map(config, (value) => value.settings.pagination.chatPageSize)
+          )
           const metaOption = yield* metaStore.get(metaKey(sessionId)).pipe(
             Effect.mapError((cause) =>
               toStorageError(storeName, "list", cause)
@@ -307,7 +506,15 @@ export class ChatHistoryStore extends Context.Tag("@effect/claude-agent-sdk/Chat
           if (Option.isNone(metaOption)) return []
 
           const meta = metaOption.value
-          const { start, end, limit, reverse } = normalizeRange(meta.lastSequence, options)
+          const limitOverride = resolveListLimit(options, defaultLimit)
+          const rangeOptions =
+            limitOverride === undefined
+              ? options
+              : { ...(options ?? {}), limit: limitOverride }
+          const { start, end, limit, reverse } = normalizeRange(
+            meta.lastSequence,
+            rangeOptions
+          )
           if (limit <= 0) return []
           const sequences = range(start, end, reverse, limit)
 
@@ -356,16 +563,68 @@ export class ChatHistoryStore extends Context.Tag("@effect/claude-agent-sdk/Chat
                 toStorageError(storeName, "purge", cause)
               )
             )
+            yield* removeSessionIndex(sessionId)
           })
         )
+
+        const cleanup = Effect.fn("ChatHistoryStore.cleanup")(function*() {
+          const enabled = yield* resolveEnabled
+          if (!enabled) return
+          const retention = yield* resolveRetention
+          if (!retention) return
+          const indexOption = yield* Effect.serviceOption(SessionIndexStore)
+          if (Option.isNone(indexOption)) return
+          const sessionIds = yield* indexOption.value.listIds()
+          if (sessionIds.length === 0) return
+          const now = yield* Clock.currentTimeMillis
+          yield* Effect.forEach(
+            sessionIds,
+            (sessionId) =>
+              loadMeta(sessionId).pipe(
+                Effect.flatMap((meta) =>
+                  applyRetentionKv(sessionId, meta.lastSequence, now, retention)
+                )
+              ),
+            { discard: true }
+          )
+        })
 
         return ChatHistoryStore.of({
           appendMessage,
           appendMessages,
           list,
           stream,
-          purge
+          purge,
+          cleanup
         })
       })
+    )
+
+  static readonly layerFileSystem = (options?: {
+    readonly directory?: string
+    readonly prefix?: string
+  }) =>
+    ChatHistoryStore.layerKeyValueStore({
+      prefix: options?.prefix ?? defaultChatHistoryPrefix
+    }).pipe(
+      Layer.provide(
+        KeyValueStore.layerFileSystem(
+          options?.directory ?? defaultStorageDirectory
+        )
+      )
+    )
+
+  static readonly layerFileSystemBun = (options?: {
+    readonly directory?: string
+    readonly prefix?: string
+  }) =>
+    ChatHistoryStore.layerKeyValueStore({
+      prefix: options?.prefix ?? defaultChatHistoryPrefix
+    }).pipe(
+      Layer.provide(
+        BunKeyValueStore.layerFileSystem(
+          options?.directory ?? defaultStorageDirectory
+        )
+      )
     )
 }

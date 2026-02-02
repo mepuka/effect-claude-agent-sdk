@@ -258,6 +258,26 @@ const program = Effect.gen(function* () {
 | `AGENTSDK_LOG_QUERY_EVENTS` | Enable query event logging | `true` |
 | `AGENTSDK_LOG_HOOKS` | Enable hook input logging | `true` |
 
+### Sandbox Settings
+
+When using `AgentSdkConfig.layerFromEnv`, the following environment variables
+populate `options.sandbox`:
+
+- `AGENTSDK_SANDBOX_ENABLED`
+- `AGENTSDK_SANDBOX_AUTO_ALLOW_BASH_IF_SANDBOXED`
+- `AGENTSDK_SANDBOX_ALLOW_UNSANDBOXED_COMMANDS`
+- `AGENTSDK_SANDBOX_ENABLE_WEAKER_NESTED_SANDBOX`
+- `AGENTSDK_SANDBOX_EXCLUDED_COMMANDS` (comma-separated)
+- `AGENTSDK_SANDBOX_IGNORE_VIOLATIONS` (JSON record of string → string[])
+- `AGENTSDK_SANDBOX_NETWORK_ALLOWED_DOMAINS` (comma-separated)
+- `AGENTSDK_SANDBOX_NETWORK_ALLOW_UNIX_SOCKETS` (comma-separated)
+- `AGENTSDK_SANDBOX_NETWORK_ALLOW_ALL_UNIX_SOCKETS`
+- `AGENTSDK_SANDBOX_NETWORK_ALLOW_LOCAL_BINDING`
+- `AGENTSDK_SANDBOX_NETWORK_HTTP_PROXY_PORT`
+- `AGENTSDK_SANDBOX_NETWORK_SOCKS_PROXY_PORT`
+- `AGENTSDK_SANDBOX_RIPGREP_COMMAND`
+- `AGENTSDK_SANDBOX_RIPGREP_ARGS` (comma-separated)
+
 ### Runtime Configuration
 
 ```ts
@@ -371,6 +391,131 @@ Guidance:
 - Use the low-level `Session` module when you want to manage every option
   explicitly; it does not read SessionConfig defaults.
 
+### Convenience Entry Points
+
+Compose session layers in one line:
+
+```ts
+import { EntryPoints, SessionService } from "effect-claude-agent-sdk"
+import * as Effect from "effect/Effect"
+import * as Stream from "effect/Stream"
+
+const program = Effect.scoped(
+  Effect.gen(function* () {
+    const session = yield* SessionService
+    return yield* session.turn("hello").pipe(Stream.runCollect)
+  }).pipe(
+    Effect.provide(
+      EntryPoints.sessionLayer(
+        { model: "claude-sonnet-4-5-20250929" },
+        { history: { recordOutput: true } }
+      )
+    )
+  )
+)
+```
+
+### Storage
+
+```ts
+import { AgentSdk, Storage } from "effect-claude-agent-sdk"
+import * as Effect from "effect/Effect"
+import * as Stream from "effect/Stream"
+
+const program = Effect.scoped(
+  Effect.gen(function* () {
+    const sdk = yield* AgentSdk
+    const handle = yield* sdk.query("Summarize the current repository.")
+    const recorded = yield* Storage.ChatHistory.withRecorder(handle, {
+      recordOutput: true
+    })
+    yield* recorded.stream.pipe(Stream.runDrain)
+  }).pipe(
+    Effect.provide([
+      AgentSdk.layerDefaultFromEnv(),
+      Storage.ChatHistoryStore.layerMemory
+    ])
+  )
+)
+```
+
+Filesystem persistence (Bun):
+
+```ts
+import { AgentRuntime, Storage } from "effect-claude-agent-sdk"
+import * as Effect from "effect/Effect"
+import * as Stream from "effect/Stream"
+
+const program = Effect.scoped(
+  Effect.gen(function* () {
+    const runtime = yield* AgentRuntime
+    const handle = yield* runtime.query("Summarize the current repository.")
+    yield* handle.stream.pipe(Stream.runDrain)
+  }).pipe(
+    Effect.provide(
+      AgentRuntime.layerWithPersistence({
+        layers: {
+          runtime: AgentRuntime.layerDefaultFromEnv(),
+          chatHistory: Storage.ChatHistoryStore.layerFileSystemBun({
+            directory: "/storage"
+          }),
+          artifacts: Storage.ArtifactStore.layerFileSystemBun({
+            directory: "/storage"
+          }),
+          auditLog: Storage.AuditEventStore.layerFileSystemBun({
+            directory: "/storage"
+          })
+        }
+      })
+    )
+  )
+)
+```
+
+Convenience layer maps:
+
+```ts
+const storageLayers = Storage.layersFileSystemBun({ directory: "/storage" })
+
+AgentRuntime.layerWithPersistence({
+  layers: {
+    runtime: AgentRuntime.layerDefaultFromEnv(),
+    ...storageLayers
+  }
+})
+```
+
+StorageConfig + cleanup:
+
+```ts
+import { Storage } from "effect-claude-agent-sdk"
+import * as Effect from "effect/Effect"
+import * as Layer from "effect/Layer"
+
+const storageLayers = Layer.mergeAll(
+  Storage.layerFileSystemBun({ directory: "/storage" }),
+  Storage.StorageConfig.layer
+)
+
+const program = Effect.scoped(
+  Effect.gen(function* () {
+    const cleanup = yield* Storage.StorageCleanup
+    yield* cleanup.run
+  }).pipe(
+    Effect.provide(
+      Layer.mergeAll(storageLayers, Storage.StorageCleanup.layer)
+    )
+  )
+)
+```
+
+`StorageCleanup.layer` runs on the configured schedule; `StorageConfig` supports env overrides
+(e.g. `STORAGE_CHAT_ENABLED`, `STORAGE_CHAT_MAX_EVENTS`, `STORAGE_ARTIFACT_MAX_BYTES`,
+`STORAGE_AUDIT_ENABLED`, `STORAGE_CLEANUP_INTERVAL`).
+
+`Storage.SessionIndexStore` tracks session IDs for KV-backed cleanup/listing (KeyValueStore has no scan API).
+Provide it alongside KV layers if you need session enumeration.
+
 ## API Reference
 
 ### Services
@@ -414,6 +559,10 @@ See the [`examples/`](./examples) directory:
 
 - `agent-sdk-mcp-rate-limit.ts` - Rate-limited MCP tools
 - `agent-sdk-audit-log.ts` - Event logging integration
+- `agent-sdk-chat-history.ts` - Chat history persistence helper
+- `agent-sdk-artifact-store.ts` - Artifact store usage
+- `agent-sdk-full-persistence.ts` - Runtime persistence composition
+- `agent-sdk-filesystem-persistence.ts` - Filesystem-backed persistence (Bun)
 - `agent-sdk-persisted-input.ts` - Persisted message queue
 - `agent-sdk-metadata-cache.ts` - Result caching
 - `agent-service-http-server.ts` / `agent-service-http-client.ts` - HTTP API

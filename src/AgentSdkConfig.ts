@@ -9,6 +9,7 @@ import { ConfigError } from "./Errors.js"
 import { defaultSettingSources, layerConfigFromEnv } from "./internal/config.js"
 import { Options, SettingSource } from "./Schema/Options.js"
 import { PermissionMode } from "./Schema/Permission.js"
+import { SandboxIgnoreViolations } from "./Schema/Sandbox.js"
 
 const SettingSourcesSchema = Schema.Array(SettingSource)
 
@@ -22,6 +23,30 @@ const parseSettingSources = (value: string) =>
     Effect.mapError((cause) =>
       ConfigError.make({
         message: "Invalid settingSources",
+        cause
+      })
+    )
+  )
+
+const parseList = (value: string) =>
+  value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0)
+
+const parseOptionalList = (value: Option.Option<string>) =>
+  Option.flatMap(value, (raw) => {
+    const entries = parseList(raw)
+    return entries.length > 0 ? Option.some(entries) : Option.none()
+  })
+
+const SandboxIgnoreViolationsSchema = Schema.parseJson(SandboxIgnoreViolations)
+
+const parseSandboxIgnoreViolations = (value: string) =>
+  Schema.decodeUnknown(SandboxIgnoreViolationsSchema)(value).pipe(
+    Effect.mapError((cause) =>
+      ConfigError.make({
+        message: "Invalid sandbox ignore violations",
         cause
       })
     )
@@ -72,6 +97,46 @@ export class AgentSdkConfig extends Context.Tag("@effect/claude-agent-sdk/AgentS
         Schema.Config("PERMISSION_MODE", PermissionMode)
       )
       const settingSourcesValue = yield* Config.option(Config.string("SETTING_SOURCES"))
+      const sandboxEnabled = yield* Config.option(Config.boolean("SANDBOX_ENABLED"))
+      const sandboxAutoAllowBashIfSandboxed = yield* Config.option(
+        Config.boolean("SANDBOX_AUTO_ALLOW_BASH_IF_SANDBOXED")
+      )
+      const sandboxAllowUnsandboxedCommands = yield* Config.option(
+        Config.boolean("SANDBOX_ALLOW_UNSANDBOXED_COMMANDS")
+      )
+      const sandboxEnableWeakerNestedSandbox = yield* Config.option(
+        Config.boolean("SANDBOX_ENABLE_WEAKER_NESTED_SANDBOX")
+      )
+      const sandboxExcludedCommandsValue = yield* Config.option(
+        Config.string("SANDBOX_EXCLUDED_COMMANDS")
+      )
+      const sandboxIgnoreViolationsValue = yield* Config.option(
+        Config.string("SANDBOX_IGNORE_VIOLATIONS")
+      )
+      const sandboxNetworkAllowedDomainsValue = yield* Config.option(
+        Config.string("SANDBOX_NETWORK_ALLOWED_DOMAINS")
+      )
+      const sandboxNetworkAllowUnixSocketsValue = yield* Config.option(
+        Config.string("SANDBOX_NETWORK_ALLOW_UNIX_SOCKETS")
+      )
+      const sandboxNetworkAllowAllUnixSockets = yield* Config.option(
+        Config.boolean("SANDBOX_NETWORK_ALLOW_ALL_UNIX_SOCKETS")
+      )
+      const sandboxNetworkAllowLocalBinding = yield* Config.option(
+        Config.boolean("SANDBOX_NETWORK_ALLOW_LOCAL_BINDING")
+      )
+      const sandboxNetworkHttpProxyPort = yield* Config.option(
+        Config.integer("SANDBOX_NETWORK_HTTP_PROXY_PORT")
+      )
+      const sandboxNetworkSocksProxyPort = yield* Config.option(
+        Config.integer("SANDBOX_NETWORK_SOCKS_PROXY_PORT")
+      )
+      const sandboxRipgrepCommand = yield* Config.option(
+        Config.string("SANDBOX_RIPGREP_COMMAND")
+      )
+      const sandboxRipgrepArgsValue = yield* Config.option(
+        Config.string("SANDBOX_RIPGREP_ARGS")
+      )
       const settingSources = Option.isSome(settingSourcesValue)
         ? yield* parseSettingSources(settingSourcesValue.value)
         : defaultSettingSources
@@ -107,6 +172,99 @@ export class AgentSdkConfig extends Context.Tag("@effect/claude-agent-sdk/AgentS
         )
       }
 
+      const sandboxExcludedCommands = parseOptionalList(sandboxExcludedCommandsValue)
+      const sandboxNetworkAllowedDomains = parseOptionalList(sandboxNetworkAllowedDomainsValue)
+      const sandboxNetworkAllowUnixSockets = parseOptionalList(
+        sandboxNetworkAllowUnixSocketsValue
+      )
+      const sandboxRipgrepArgs = parseOptionalList(sandboxRipgrepArgsValue)
+      const sandboxIgnoreViolations = Option.isSome(sandboxIgnoreViolationsValue)
+        ? Option.some(
+            yield* parseSandboxIgnoreViolations(sandboxIgnoreViolationsValue.value)
+          )
+        : Option.none()
+
+      if (Option.isNone(sandboxRipgrepCommand) && Option.isSome(sandboxRipgrepArgs)) {
+        yield* Effect.logError(
+          "SANDBOX_RIPGREP_ARGS requires SANDBOX_RIPGREP_COMMAND."
+        )
+      }
+
+      const sandboxNetwork =
+        Option.isSome(sandboxNetworkAllowedDomains) ||
+        Option.isSome(sandboxNetworkAllowUnixSockets) ||
+        Option.isSome(sandboxNetworkAllowAllUnixSockets) ||
+        Option.isSome(sandboxNetworkAllowLocalBinding) ||
+        Option.isSome(sandboxNetworkHttpProxyPort) ||
+        Option.isSome(sandboxNetworkSocksProxyPort)
+          ? {
+              ...(Option.isSome(sandboxNetworkAllowedDomains)
+                ? { allowedDomains: sandboxNetworkAllowedDomains.value }
+                : {}),
+              ...(Option.isSome(sandboxNetworkAllowUnixSockets)
+                ? { allowUnixSockets: sandboxNetworkAllowUnixSockets.value }
+                : {}),
+              ...(Option.isSome(sandboxNetworkAllowAllUnixSockets)
+                ? { allowAllUnixSockets: sandboxNetworkAllowAllUnixSockets.value }
+                : {}),
+              ...(Option.isSome(sandboxNetworkAllowLocalBinding)
+                ? { allowLocalBinding: sandboxNetworkAllowLocalBinding.value }
+                : {}),
+              ...(Option.isSome(sandboxNetworkHttpProxyPort)
+                ? { httpProxyPort: sandboxNetworkHttpProxyPort.value }
+                : {}),
+              ...(Option.isSome(sandboxNetworkSocksProxyPort)
+                ? { socksProxyPort: sandboxNetworkSocksProxyPort.value }
+                : {})
+            }
+          : undefined
+
+      const sandboxRipgrep = Option.isSome(sandboxRipgrepCommand)
+        ? {
+            command: sandboxRipgrepCommand.value,
+            ...(Option.isSome(sandboxRipgrepArgs)
+              ? { args: sandboxRipgrepArgs.value }
+              : {})
+          }
+        : undefined
+
+      const sandbox =
+        Option.isSome(sandboxEnabled) ||
+        Option.isSome(sandboxAutoAllowBashIfSandboxed) ||
+        Option.isSome(sandboxAllowUnsandboxedCommands) ||
+        Option.isSome(sandboxEnableWeakerNestedSandbox) ||
+        Option.isSome(sandboxExcludedCommands) ||
+        Option.isSome(sandboxIgnoreViolations) ||
+        sandboxNetwork !== undefined ||
+        sandboxRipgrep !== undefined
+          ? {
+              ...(Option.isSome(sandboxEnabled)
+                ? { enabled: sandboxEnabled.value }
+                : {}),
+              ...(Option.isSome(sandboxAutoAllowBashIfSandboxed)
+                ? { autoAllowBashIfSandboxed: sandboxAutoAllowBashIfSandboxed.value }
+                : {}),
+              ...(Option.isSome(sandboxAllowUnsandboxedCommands)
+                ? {
+                    allowUnsandboxedCommands: sandboxAllowUnsandboxedCommands.value
+                  }
+                : {}),
+              ...(sandboxNetwork ? { network: sandboxNetwork } : {}),
+              ...(Option.isSome(sandboxIgnoreViolations)
+                ? { ignoreViolations: sandboxIgnoreViolations.value }
+                : {}),
+              ...(Option.isSome(sandboxEnableWeakerNestedSandbox)
+                ? {
+                    enableWeakerNestedSandbox: sandboxEnableWeakerNestedSandbox.value
+                  }
+                : {}),
+              ...(Option.isSome(sandboxExcludedCommands)
+                ? { excludedCommands: sandboxExcludedCommands.value }
+                : {}),
+              ...(sandboxRipgrep ? { ripgrep: sandboxRipgrep } : {})
+            }
+          : undefined
+
       const options: Options = {
         executable: Option.getOrUndefined(executable) ?? "bun",
         cwd: Option.getOrUndefined(cwd) ?? cwdDefault,
@@ -114,7 +272,8 @@ export class AgentSdkConfig extends Context.Tag("@effect/claude-agent-sdk/AgentS
         allowDangerouslySkipPermissions: Option.getOrUndefined(allowDangerouslySkipPermissions),
         permissionMode: Option.getOrUndefined(permissionMode),
         settingSources,
-        env
+        env,
+        ...(sandbox ? { sandbox } : {})
       }
 
       return AgentSdkConfig.of({ options })

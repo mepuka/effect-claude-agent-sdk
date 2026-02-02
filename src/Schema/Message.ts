@@ -76,11 +76,14 @@ export const SDKHookResponseMessage = withSdkMessage(
   Schema.Struct({
     type: Schema.Literal("system"),
     subtype: Schema.Literal("hook_response"),
+    hook_id: Schema.String,
     hook_name: Schema.String,
     hook_event: Schema.String,
+    output: Schema.String,
     stdout: Schema.String,
     stderr: Schema.String,
     exit_code: Schema.optional(Schema.Number),
+    outcome: Schema.Literal("success", "error", "cancelled"),
     uuid: UUID,
     session_id: Schema.String
   }),
@@ -89,6 +92,41 @@ export const SDKHookResponseMessage = withSdkMessage(
 
 export type SDKHookResponseMessage = typeof SDKHookResponseMessage.Type
 export type SDKHookResponseMessageEncoded = typeof SDKHookResponseMessage.Encoded
+
+export const SDKHookStartedMessage = withSdkMessage(
+  Schema.Struct({
+    type: Schema.Literal("system"),
+    subtype: Schema.Literal("hook_started"),
+    hook_id: Schema.String,
+    hook_name: Schema.String,
+    hook_event: Schema.String,
+    uuid: UUID,
+    session_id: Schema.String
+  }),
+  "SDKHookStartedMessage"
+)
+
+export type SDKHookStartedMessage = typeof SDKHookStartedMessage.Type
+export type SDKHookStartedMessageEncoded = typeof SDKHookStartedMessage.Encoded
+
+export const SDKHookProgressMessage = withSdkMessage(
+  Schema.Struct({
+    type: Schema.Literal("system"),
+    subtype: Schema.Literal("hook_progress"),
+    hook_id: Schema.String,
+    hook_name: Schema.String,
+    hook_event: Schema.String,
+    stdout: Schema.String,
+    stderr: Schema.String,
+    output: Schema.String,
+    uuid: UUID,
+    session_id: Schema.String
+  }),
+  "SDKHookProgressMessage"
+)
+
+export type SDKHookProgressMessage = typeof SDKHookProgressMessage.Type
+export type SDKHookProgressMessageEncoded = typeof SDKHookProgressMessage.Encoded
 
 export const SDKPartialAssistantMessage = withSdkMessage(
   Schema.Struct({
@@ -237,6 +275,32 @@ export const SDKTaskNotificationMessage = withSdkMessage(
 export type SDKTaskNotificationMessage = typeof SDKTaskNotificationMessage.Type
 export type SDKTaskNotificationMessageEncoded = typeof SDKTaskNotificationMessage.Encoded
 
+export const SDKFilesPersistedEvent = withSdkMessage(
+  Schema.Struct({
+    type: Schema.Literal("system"),
+    subtype: Schema.Literal("files_persisted"),
+    files: Schema.Array(
+      Schema.Struct({
+        filename: Schema.String,
+        file_id: Schema.String
+      })
+    ),
+    failed: Schema.Array(
+      Schema.Struct({
+        filename: Schema.String,
+        error: Schema.String
+      })
+    ),
+    processed_at: Schema.String,
+    uuid: UUID,
+    session_id: Schema.String
+  }),
+  "SDKFilesPersistedEvent"
+)
+
+export type SDKFilesPersistedEvent = typeof SDKFilesPersistedEvent.Type
+export type SDKFilesPersistedEventEncoded = typeof SDKFilesPersistedEvent.Encoded
+
 export const SDKToolProgressMessage = withSdkMessage(
   Schema.Struct({
     type: Schema.Literal("tool_progress"),
@@ -252,6 +316,20 @@ export const SDKToolProgressMessage = withSdkMessage(
 
 export type SDKToolProgressMessage = typeof SDKToolProgressMessage.Type
 export type SDKToolProgressMessageEncoded = typeof SDKToolProgressMessage.Encoded
+
+export const SDKToolUseSummaryMessage = withSdkMessage(
+  Schema.Struct({
+    type: Schema.Literal("tool_use_summary"),
+    summary: Schema.String,
+    preceding_tool_use_ids: Schema.Array(Schema.String),
+    uuid: UUID,
+    session_id: Schema.String
+  }),
+  "SDKToolUseSummaryMessage"
+)
+
+export type SDKToolUseSummaryMessage = typeof SDKToolUseSummaryMessage.Type
+export type SDKToolUseSummaryMessageEncoded = typeof SDKToolUseSummaryMessage.Encoded
 
 export const SDKUserMessage = withSdkMessage(
   Schema.Struct({
@@ -296,10 +374,14 @@ export const SDKMessage = withIdentifier(
     SDKPartialAssistantMessage,
     SDKCompactBoundaryMessage,
     SDKStatusMessage,
+    SDKHookStartedMessage,
+    SDKHookProgressMessage,
     SDKHookResponseMessage,
     SDKToolProgressMessage,
+    SDKToolUseSummaryMessage,
     SDKAuthStatusMessage,
-    SDKTaskNotificationMessage
+    SDKTaskNotificationMessage,
+    SDKFilesPersistedEvent
   ),
   "SDKMessage"
 )

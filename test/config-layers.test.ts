@@ -40,6 +40,64 @@ test("AgentSdkConfig reads options from config provider", async () => {
   expect(options.permissionMode).toBe("plan")
 })
 
+test("AgentSdkConfig reads sandbox settings from config provider", async () => {
+  const layer = AgentSdkConfig.layer.pipe(
+    Layer.provide(
+      configLayer({
+        SANDBOX_ENABLED: "true",
+        SANDBOX_AUTO_ALLOW_BASH_IF_SANDBOXED: "true",
+        SANDBOX_ALLOW_UNSANDBOXED_COMMANDS: "false",
+        SANDBOX_ENABLE_WEAKER_NESTED_SANDBOX: "true",
+        SANDBOX_EXCLUDED_COMMANDS: "rm, shutdown",
+        SANDBOX_NETWORK_ALLOWED_DOMAINS: "example.com, api.example.com",
+        SANDBOX_NETWORK_ALLOW_UNIX_SOCKETS: "/tmp/socket1,/tmp/socket2",
+        SANDBOX_NETWORK_ALLOW_ALL_UNIX_SOCKETS: "false",
+        SANDBOX_NETWORK_ALLOW_LOCAL_BINDING: "true",
+        SANDBOX_NETWORK_HTTP_PROXY_PORT: "8080",
+        SANDBOX_NETWORK_SOCKS_PROXY_PORT: "1080",
+        SANDBOX_RIPGREP_COMMAND: "rg",
+        SANDBOX_RIPGREP_ARGS: "--hidden,--glob,!node_modules",
+        SANDBOX_IGNORE_VIOLATIONS:
+          "{\"rg\":[\"line-too-long\"],\"bash\":[\"unsafe-flag\"]}"
+      })
+    )
+  )
+
+  const program = Effect.gen(function*() {
+    const config = yield* AgentSdkConfig
+    return config.options
+  }).pipe(Effect.provide(layer))
+
+  const options = await runEffect(program)
+  expect(options.sandbox?.enabled).toBe(true)
+  expect(options.sandbox?.autoAllowBashIfSandboxed).toBe(true)
+  expect(options.sandbox?.allowUnsandboxedCommands).toBe(false)
+  expect(options.sandbox?.enableWeakerNestedSandbox).toBe(true)
+  expect(options.sandbox?.excludedCommands).toEqual(["rm", "shutdown"])
+  expect(options.sandbox?.network?.allowedDomains).toEqual([
+    "example.com",
+    "api.example.com"
+  ])
+  expect(options.sandbox?.network?.allowUnixSockets).toEqual([
+    "/tmp/socket1",
+    "/tmp/socket2"
+  ])
+  expect(options.sandbox?.network?.allowAllUnixSockets).toBe(false)
+  expect(options.sandbox?.network?.allowLocalBinding).toBe(true)
+  expect(options.sandbox?.network?.httpProxyPort).toBe(8080)
+  expect(options.sandbox?.network?.socksProxyPort).toBe(1080)
+  expect(options.sandbox?.ripgrep?.command).toBe("rg")
+  expect(options.sandbox?.ripgrep?.args).toEqual([
+    "--hidden",
+    "--glob",
+    "!node_modules"
+  ])
+  expect(options.sandbox?.ignoreViolations).toEqual({
+    rg: ["line-too-long"],
+    bash: ["unsafe-flag"]
+  })
+})
+
 test("AgentSdkConfig rejects invalid setting sources", async () => {
   const layer = AgentSdkConfig.layer.pipe(
     Layer.provide(
