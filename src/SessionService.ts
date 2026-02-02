@@ -99,7 +99,7 @@ export class SessionService extends Context.Tag("@effect/claude-agent-sdk/Sessio
           )
 
         const [userStream, recordStream] = recordOutput
-          ? yield* Stream.broadcast(handle.stream, 2, 16)
+          ? yield* Stream.broadcast(handle.stream, 2, 64)
           : [handle.stream, Stream.empty]
 
         if (recordOutput) {
@@ -112,7 +112,23 @@ export class SessionService extends Context.Tag("@effect/claude-agent-sdk/Sessio
 
         const recordInputMessage = (message: string | SDKUserMessage) =>
           typeof message === "string"
-            ? Effect.void
+            ? handle.sessionId.pipe(
+                Effect.flatMap((resolvedSessionId) =>
+                  recordMessage(
+                    {
+                      type: "user",
+                      session_id: resolvedSessionId,
+                      message: {
+                        role: "user",
+                        content: [{ type: "text", text: message }]
+                      },
+                      parent_tool_use_id: null
+                    },
+                    inputSource
+                  )
+                ),
+                Effect.catchAll(() => Effect.void)
+              )
             : recordMessage(message, inputSource)
 
         const send = recordInput

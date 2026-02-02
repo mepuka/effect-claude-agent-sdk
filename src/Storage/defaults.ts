@@ -1,4 +1,4 @@
-export const defaultStorageDirectory = "/storage"
+export const defaultStorageDirectory = "storage"
 
 export const defaultChatHistoryPrefix = "claude-agent-sdk/chat-history"
 export const defaultArtifactPrefix = "claude-agent-sdk/artifacts"

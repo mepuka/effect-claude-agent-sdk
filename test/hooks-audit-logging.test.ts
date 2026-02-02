@@ -105,3 +105,63 @@ test("Hooks.wrapPermissionHooks logs permission decisions", async () => {
   const events = await Effect.runPromise(program)
   expect(events.includes("permission_decision")).toBe(true)
 })
+
+test("Hooks.wrapPermissionHooks logs PreToolUse permission decisions", async () => {
+  const program = Effect.gen(function*() {
+    const wrapped = yield* Hooks.wrapPermissionHooks({
+      PreToolUse: [
+        {
+          matcher: undefined,
+          timeout: undefined,
+          hooks: [
+            async () => ({
+              hookSpecificOutput: {
+                hookEventName: "PreToolUse",
+                permissionDecision: "deny",
+                permissionDecisionReason: "nope"
+              }
+            })
+          ]
+        }
+      ]
+    }, "")
+
+    const hook = wrapped.PreToolUse?.[0]?.hooks[0]
+    if (!hook) return [] as ReadonlyArray<string>
+
+    const signal = new AbortController().signal
+    yield* Effect.tryPromise({
+      try: () => hook(preToolUse, preToolUse.tool_use_id, { signal }),
+      catch: () => undefined
+    })
+
+    const store = yield* Storage.AuditEventStore
+    const entries = yield* store.entries
+    return entries.map((entry) => entry.event)
+  }).pipe(Effect.provide(Storage.AuditEventStore.layerMemory))
+
+  const events = await Effect.runPromise(program)
+  expect(events.includes("permission_decision")).toBe(true)
+})
+
+test("Hooks.withAuditLogging respects logHookOutcomes false", async () => {
+  const program = Effect.gen(function*() {
+    const hooks = yield* Hooks.withAuditLogging("", { logHookOutcomes: false })
+    const preHook = hooks.PreToolUse?.[0]?.hooks[0]
+    if (!preHook) return [] as ReadonlyArray<string>
+
+    const signal = new AbortController().signal
+    yield* Effect.tryPromise({
+      try: () => preHook(preToolUse, preToolUse.tool_use_id, { signal }),
+      catch: () => undefined
+    })
+
+    const store = yield* Storage.AuditEventStore
+    const entries = yield* store.entries
+    return entries.map((entry) => entry.event)
+  }).pipe(Effect.provide(Storage.AuditEventStore.layerMemory))
+
+  const events = await Effect.runPromise(program)
+  expect(events.includes("hook_event")).toBe(false)
+  expect(events.includes("tool_use")).toBe(true)
+})

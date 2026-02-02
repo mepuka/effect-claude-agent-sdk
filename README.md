@@ -201,20 +201,24 @@ Handle SDK lifecycle events with Effect:
 import * as Effect from "effect/Effect"
 import { Hooks } from "effect-claude-agent-sdk"
 
-const myHook = Hooks.Hook.callback((input, context) =>
-  Effect.gen(function* () {
-    if (input.type === "PreToolUse") {
-      yield* Effect.log(`Tool ${input.tool_name} about to be called`)
-    }
-    return {} // Hook output
-  })
-)
+const program = Effect.gen(function* () {
+  const myHook = yield* Hooks.Hook.callback((input) =>
+    Effect.gen(function* () {
+      if (input.hook_event_name === "PreToolUse") {
+        yield* Effect.log(`Tool ${input.tool_name} about to be called`)
+      }
+      return {} // Hook output
+    })
+  )
 
-// Create a matcher for specific events
-const matcher = Hooks.Hook.matcher({
-  matcher: "PreToolUse",
-  timeout: "30 seconds",
-  hooks: [yield* myHook]
+  // Create a matcher for specific events
+  const matcher = Hooks.Hook.matcher({
+    matcher: "PreToolUse",
+    timeout: "30 seconds",
+    hooks: [myHook]
+  })
+
+  return matcher
 })
 ```
 
@@ -457,13 +461,13 @@ const program = Effect.scoped(
         layers: {
           runtime: AgentRuntime.layerDefaultFromEnv(),
           chatHistory: Storage.ChatHistoryStore.layerFileSystemBun({
-            directory: "/storage"
+            directory: "storage"
           }),
           artifacts: Storage.ArtifactStore.layerFileSystemBun({
-            directory: "/storage"
+            directory: "storage"
           }),
           auditLog: Storage.AuditEventStore.layerFileSystemBun({
-            directory: "/storage"
+            directory: "storage"
           })
         }
       })
@@ -475,7 +479,7 @@ const program = Effect.scoped(
 Convenience layer maps:
 
 ```ts
-const storageLayers = Storage.layersFileSystemBun({ directory: "/storage" })
+const storageLayers = Storage.layersFileSystemBun({ directory: "storage" })
 
 AgentRuntime.layerWithPersistence({
   layers: {
@@ -485,6 +489,9 @@ AgentRuntime.layerWithPersistence({
 })
 ```
 
+Use a relative `directory` for local development; pass an absolute path (e.g. `/storage`)
+when running with a mounted volume.
+
 StorageConfig + cleanup:
 
 ```ts
@@ -493,7 +500,7 @@ import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
 
 const storageLayers = Layer.mergeAll(
-  Storage.layerFileSystemBun({ directory: "/storage" }),
+  Storage.layerFileSystemBun({ directory: "storage" }),
   Storage.StorageConfig.layer
 )
 

@@ -28,9 +28,9 @@ automatic recording helpers, and ergonomic runtime composition. All new behavior
 - Schema types: `src/Schema/Storage.ts`, `src/Schema/Message.ts`, `src/Schema/Hooks.ts`
 
 ## Decisions
-1) **Default filesystem directory**: `/storage`.
-   - Reason: stable absolute path aligned with deployment preferences.
-   - Users can pass a relative path if they prefer project-local storage.
+1) **Default filesystem directory**: `storage` (relative to cwd).
+   - Reason: works out of the box in local/dev environments.
+   - Users can pass an absolute path (including `/storage`) for container mounts.
 2) **Bun filesystem convenience**: add `layerFileSystemBun` for each store, in addition to
    the portable `layerFileSystem`.
 3) **Audit logging error policy**: fail-open by default (audit failures do not block hooks);
@@ -96,10 +96,10 @@ export type StorageConfigData = {
 
 export class StorageConfig extends Context.Tag("@effect/claude-agent-sdk/StorageConfig")<
   StorageConfig,
-  StorageConfigData
+  { readonly settings: StorageConfigData }
 >() {
-  static readonly layerDefault: Layer.Layer<StorageConfig>
-  static readonly layerFromEnv: Layer.Layer<StorageConfig>
+  static readonly layer: Layer.Layer<StorageConfig>
+  static readonly layerFromEnv: (prefix?: string) => Layer.Layer<StorageConfig>
 }
 ```
 
@@ -132,7 +132,7 @@ Add:
 - `layerFileSystemBun(options?: { directory?: string; prefix?: string })`
 
 Defaults:
-- `directory`: `/storage`
+- `directory`: `storage`
 - `prefix` (per store): `claude-agent-sdk/chat-history`, `claude-agent-sdk/artifacts`,
   `claude-agent-sdk/session-index`, `claude-agent-sdk/event-journal`
 
@@ -146,8 +146,9 @@ Notes:
 
 ```ts
 export type RecorderOptions = {
-  readonly sessionId: string
+  readonly sessionId?: string
   readonly source?: ChatEventSource
+  readonly inputSource?: ChatEventSource
   readonly recordInput?: boolean
   readonly recordOutput?: boolean
   readonly strict?: boolean
@@ -165,25 +166,18 @@ Behavior:
 - Fail-open by default; `strict` toggles failure propagation.
 
 ### 5) Session/Runtime History Layer
-**File**: `src/SessionService.ts` or `src/AgentRuntime.ts`
+**File**: `src/SessionService.ts` and `src/AgentRuntime.ts`
 
 ```ts
-export type HistoryLayerOptions = {
-  readonly sessionId: Effect.Effect<string, never, SessionService>
-  readonly recordInput?: boolean
-  readonly recordOutput?: boolean
-  readonly source?: ChatEventSource
-  readonly strict?: boolean
-}
-
-export const layerWithHistory: (
-  options: HistoryLayerOptions
-) => (base: Layer.Layer<AgentRuntime>) => Layer.Layer<AgentRuntime, StorageError, ChatHistoryStore | SessionService>
+export const SessionService.layerWithHistory: (
+  options: SDKSessionOptions,
+  history?: SessionHistoryOptions
+) => Layer.Layer<SessionService, SessionError, SessionManager | ChatHistoryStore>
 ```
 
 Behavior:
-- Decorates `AgentRuntime.query` and `queryRaw` so returned handles are recorded.
-- Keeps the runtime API unchanged; only adds persistence behavior.
+- `SessionService.layerWithHistory` records output and (optionally) input for a scoped session.
+- `AgentRuntime.layerWithPersistence({ history })` decorates query handles to record history.
 
 ### 6) Audit Logging Middleware
 **File**: `src/Hooks/Hook.ts`
@@ -193,13 +187,14 @@ export type AuditLoggingOptions = {
   readonly strict?: boolean
   readonly logHookOutcomes?: boolean
   readonly logPermissionDecisions?: boolean
-  readonly mode?: "prepend" | "append"
+  readonly matcher?: string
+  readonly timeout?: Duration.DurationInput
 }
 
 export const withAuditLogging: (
   sessionId: string,
   options?: AuditLoggingOptions
-) => Effect.Effect<HookMap, never, AuditEventStore | Clock>
+) => Effect.Effect<HookMap, never, AuditEventStore>
 ```
 
 Behavior:
@@ -215,15 +210,17 @@ Behavior:
 
 ```ts
 export type PersistenceLayers = {
+  readonly runtime?: Layer.Layer<AgentRuntime>
   readonly chatHistory?: Layer.Layer<ChatHistoryStore>
   readonly artifacts?: Layer.Layer<ArtifactStore>
   readonly auditLog?: Layer.Layer<AuditEventStore>
+  readonly sessionIndex?: Layer.Layer<SessionIndexStore>
   readonly storageConfig?: Layer.Layer<StorageConfig>
 }
 
 export type PersistenceOptions = {
   readonly layers?: PersistenceLayers
-  readonly history?: HistoryLayerOptions
+  readonly history?: RecorderOptions
   readonly audit?: AuditLoggingOptions
 }
 
@@ -237,6 +234,8 @@ class AgentRuntime {
 Behavior:
 - Provides runtime + store layers with sensible defaults (memory if unspecified).
 - Enables chat recording and audit middleware by default when `history`/`audit` options are provided.
+- Chat history recording runs in a background fiber, so recording does not require
+  the caller to drain the stream.
 - Should be the recommended entrypoint for full persistence wiring.
 
 ## Data Model Impact

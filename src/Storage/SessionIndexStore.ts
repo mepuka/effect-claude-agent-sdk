@@ -64,8 +64,10 @@ type SessionIndexPageData = {
   readonly updatedAt: number
 }
 
-const resolveListLimit = (options: SessionIndexListOptions | undefined, fallback?: number) =>
-  options?.limit ?? fallback
+const resolveListLimit = (options: SessionIndexListOptions | undefined, fallback?: number) => {
+  const resolved = options?.limit ?? fallback
+  return resolved ?? defaultIndexPageSize
+}
 
 const defaultOrderBy: SessionIndexOrderBy = "updatedAt"
 const defaultDirection: SessionIndexDirection = "desc"
@@ -183,33 +185,38 @@ export class SessionIndexStore extends Context.Tag("@effect/claude-agent-sdk/Ses
       const list = Effect.fn("SessionIndexStore.list")((options?: SessionIndexListOptions) =>
         Effect.gen(function*() {
           const config = yield* Effect.serviceOption(StorageConfig)
-          const defaultLimit = Option.getOrUndefined(
-            Option.map(config, (value) => value.settings.kv.indexPageSize)
-          )
-          const limit = resolveListLimit(options, defaultLimit)
+          const fallbackLimit = Option.isNone(config)
+            ? defaultIndexPageSize
+            : config.value.settings.kv.indexPageSize
+          const limit = resolveListLimit(options, fallbackLimit)
           const offset = Math.max(0, options?.offset ?? 0)
+          if (limit <= 0) return []
           const state = yield* SynchronizedRef.get(stateRef)
           const metas = state.ids.flatMap((id) => {
             const meta = state.meta.get(id)
             return meta ? [meta] : []
           })
           const ordered = applyOrdering(metas, options)
-          const slice = limit === undefined
-            ? ordered.slice(offset)
-            : ordered.slice(offset, offset + limit)
-          return slice
+          return ordered.slice(offset, offset + limit)
         })
       )
 
       const listPage = Effect.fn("SessionIndexStore.listPage")(function*(
         options?: SessionIndexListOptions
       ) {
-        const items = yield* list(options)
-        if (items.length === 0) return { items }
+        const config = yield* Effect.serviceOption(StorageConfig)
+        const fallbackLimit = Option.isNone(config)
+          ? defaultIndexPageSize
+          : config.value.settings.kv.indexPageSize
+        const limit = resolveListLimit(options, fallbackLimit)
+        if (limit <= 0) return { items: [] }
+        const items = yield* list({ ...options, limit: limit + 1 })
+        if (items.length <= limit) return { items }
+        const pageItems = items.slice(0, limit)
         const orderBy = options?.orderBy ?? defaultOrderBy
         return {
-          items,
-          nextCursor: makeCursor(items[items.length - 1]!, orderBy)
+          items: pageItems,
+          nextCursor: makeCursor(pageItems[pageItems.length - 1]!, orderBy)
         }
       })
 
@@ -320,11 +327,12 @@ export class SessionIndexStore extends Context.Tag("@effect/claude-agent-sdk/Ses
         const list = Effect.fn("SessionIndexStore.list")((options?: SessionIndexListOptions) =>
           Effect.gen(function*() {
             const config = yield* Effect.serviceOption(StorageConfig)
-            const defaultLimit = Option.getOrUndefined(
-              Option.map(config, (value) => value.settings.kv.indexPageSize)
-            )
-            const limit = resolveListLimit(options, defaultLimit)
+            const fallbackLimit = Option.isNone(config)
+              ? defaultIndexPageSize
+              : config.value.settings.kv.indexPageSize
+            const limit = resolveListLimit(options, fallbackLimit)
             const offset = Math.max(0, options?.offset ?? 0)
+            if (limit <= 0) return []
             const ids = yield* listIds()
             const metas = yield* Effect.forEach(
               ids,
@@ -335,22 +343,26 @@ export class SessionIndexStore extends Context.Tag("@effect/claude-agent-sdk/Ses
             )
             const resolved = metas.flatMap((meta) => Option.isSome(meta) ? [meta.value] : [])
             const ordered = applyOrdering(resolved, options)
-            const windowed = limit === undefined
-              ? ordered.slice(offset)
-              : ordered.slice(offset, offset + limit)
-            return windowed
+            return ordered.slice(offset, offset + limit)
           })
         )
 
         const listPage = Effect.fn("SessionIndexStore.listPage")(function*(
           options?: SessionIndexListOptions
         ) {
-          const items = yield* list(options)
-          if (items.length === 0) return { items }
+          const config = yield* Effect.serviceOption(StorageConfig)
+          const fallbackLimit = Option.isNone(config)
+            ? defaultIndexPageSize
+            : config.value.settings.kv.indexPageSize
+          const limit = resolveListLimit(options, fallbackLimit)
+          if (limit <= 0) return { items: [] }
+          const items = yield* list({ ...options, limit: limit + 1 })
+          if (items.length <= limit) return { items }
+          const pageItems = items.slice(0, limit)
           const orderBy = options?.orderBy ?? defaultOrderBy
           return {
-            items,
-            nextCursor: makeCursor(items[items.length - 1]!, orderBy)
+            items: pageItems,
+            nextCursor: makeCursor(pageItems[pageItems.length - 1]!, orderBy)
           }
         })
 

@@ -43,7 +43,7 @@ const promptDecision = "prompt" as const
 
 type AuditEventStoreService = Context.Tag.Service<typeof AuditEventStore>
 type ResolvedPermissionDecision = {
-  readonly decision: "allow" | "deny"
+  readonly decision: "allow" | "deny" | "prompt"
   readonly reason?: string
 }
 
@@ -53,6 +53,9 @@ const recordWrite = (
   effect: Effect.Effect<void, unknown>
 ) => (strict ? effect : effect.pipe(Effect.catchAll(() => Effect.void)))
 
+const resolveHookToolUseId = (input: HookInput, toolUseId: string | undefined) =>
+  toolUseId ?? ("tool_use_id" in input ? input.tool_use_id : undefined)
+
 const recordHookOutcome = (
   store: AuditEventStoreService,
   strict: boolean,
@@ -60,8 +63,9 @@ const recordHookOutcome = (
   toolUseId: string | undefined,
   outcome: "success" | "failure",
   sessionId: string
-) =>
-  recordWrite(
+) => {
+  const resolvedToolUseId = resolveHookToolUseId(input, toolUseId)
+  return recordWrite(
     store,
     strict,
     store.write({
@@ -69,11 +73,12 @@ const recordHookOutcome = (
       payload: {
         sessionId,
         hook: input.hook_event_name,
-        ...(toolUseId ? { toolUseId } : {}),
+        ...(resolvedToolUseId ? { toolUseId: resolvedToolUseId } : {}),
         outcome
       }
     })
   )
+}
 
 const recordPermissionPrompt = (
   store: AuditEventStoreService,
@@ -99,14 +104,33 @@ const recordPermissionPrompt = (
 const resolvePermissionDecision = (output: HookJSONOutput): ResolvedPermissionDecision | undefined => {
   if ("hookSpecificOutput" in output && output.hookSpecificOutput?.hookEventName === "PermissionRequest") {
     const decision = output.hookSpecificOutput.decision
-    const reason = "reason" in output && output.reason
-      ? output.reason
-      : "message" in decision && decision.message
-        ? decision.message
+    const reason = "message" in decision && decision.message
+      ? decision.message
+      : "reason" in output && output.reason
+        ? output.reason
         : undefined
     return {
       decision: decision.behavior,
       ...(reason ? { reason } : {})
+    }
+  }
+
+  if ("hookSpecificOutput" in output && output.hookSpecificOutput) {
+    const hookSpecific = output.hookSpecificOutput
+    if ("permissionDecision" in hookSpecific && hookSpecific.permissionDecision) {
+      const decision =
+        hookSpecific.permissionDecision === "ask"
+          ? "prompt"
+          : hookSpecific.permissionDecision
+      const reason = "permissionDecisionReason" in hookSpecific
+        ? hookSpecific.permissionDecisionReason
+        : "reason" in output && output.reason
+          ? output.reason
+          : undefined
+      return {
+        decision,
+        ...(reason ? { reason } : {})
+      }
     }
   }
 
@@ -128,7 +152,9 @@ const wrapPermissionCallback = (
   sessionId: string
 ): HookCallback => async (input, toolUseId, options) => {
   const output = await hook(input, toolUseId, options)
-  if (input.hook_event_name !== "PermissionRequest") return output
+  if (input.hook_event_name !== "PermissionRequest" && input.hook_event_name !== "PreToolUse") {
+    return output
+  }
 
   const resolved = resolvePermissionDecision(output)
   if (!resolved) return output
@@ -158,17 +184,35 @@ export const wrapPermissionHooks = Effect.fn("Hooks.wrapPermissionHooks")(functi
   const store = yield* AuditEventStore
   const strict = options?.strict ?? false
   const matchers = hooks.PermissionRequest
-  if (!matchers || matchers.length === 0) return hooks
+  const preToolMatchers = hooks.PreToolUse
+  if ((!matchers || matchers.length === 0) && (!preToolMatchers || preToolMatchers.length === 0)) {
+    return hooks
+  }
 
   const wrapped: HookMap = {
     ...hooks,
-    PermissionRequest: matchers.map((matcherEntry) => ({
-      matcher: matcherEntry.matcher,
-      timeout: matcherEntry.timeout,
-      hooks: matcherEntry.hooks.map((hook) =>
-        wrapPermissionCallback(hook, store, strict, sessionId)
-      )
-    }))
+    ...(matchers && matchers.length > 0
+      ? {
+          PermissionRequest: matchers.map((matcherEntry) => ({
+            matcher: matcherEntry.matcher,
+            timeout: matcherEntry.timeout,
+            hooks: matcherEntry.hooks.map((hook) =>
+              wrapPermissionCallback(hook, store, strict, sessionId)
+            )
+          }))
+        }
+      : {}),
+    ...(preToolMatchers && preToolMatchers.length > 0
+      ? {
+          PreToolUse: preToolMatchers.map((matcherEntry) => ({
+            matcher: matcherEntry.matcher,
+            timeout: matcherEntry.timeout,
+            hooks: matcherEntry.hooks.map((hook) =>
+              wrapPermissionCallback(hook, store, strict, sessionId)
+            )
+          }))
+        }
+      : {})
   }
 
   return wrapped
@@ -304,16 +348,19 @@ export const withAuditLogging = Effect.fn("Hooks.withAuditLogging")(function*(
 
       return {} satisfies HookJSONOutput
     }).pipe(
-      Effect.catchAll((cause) =>
-        recordHookOutcome(
-          store,
-          false,
-          input,
-          context.toolUseID,
-          "failure",
-          sessionId || input.session_id
-        ).pipe(Effect.zipRight(Effect.fail(cause)))
-      ),
+      Effect.catchAll((cause) => {
+        const recordFailure = logHookOutcomes
+          ? recordHookOutcome(
+              store,
+              false,
+              input,
+              context.toolUseID,
+              "failure",
+              sessionId || input.session_id
+            )
+          : Effect.void
+        return recordFailure.pipe(Effect.zipRight(Effect.fail(cause)))
+      }),
       Effect.mapError((cause) =>
         HookError.make({
           message: "Audit hook failed",

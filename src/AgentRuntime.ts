@@ -115,11 +115,11 @@ const resolveToolResultContent = (value: unknown) => {
   }
 }
 
-const recordHandleWithStore = (
+const recordHandleWithStore = Effect.fn("AgentRuntime.recordHandleWithStore")(function*(
   handle: QueryHandle,
   store: ChatHistoryStoreService,
   options?: RecorderOptions
-): QueryHandle => {
+) {
   const sessionId = options?.sessionId
   const outputSource = options?.source ?? "sdk"
   const inputSource = options?.inputSource ?? "external"
@@ -141,9 +141,16 @@ const recordHandleWithStore = (
     return strict ? effect.pipe(Effect.orDie) : effect.pipe(Effect.catchAll(() => Effect.void))
   }
 
-  const stream = recordOutput
-    ? handle.stream.pipe(Stream.tap((message) => recordMessage(message, outputSource)))
-    : handle.stream
+  let stream = handle.stream
+  if (recordOutput) {
+    const [userStream, recordStream] = yield* Stream.broadcast(handle.stream, 2, 64)
+    stream = userStream
+    yield* Effect.forkScoped(
+      Stream.runForEach(recordStream, (message) =>
+        recordMessage(message, outputSource)
+      )
+    )
+  }
 
   const send = recordInput
     ? Effect.fn("AgentRuntime.sendWithHistory")((message: SDKUserMessage) =>
@@ -175,7 +182,7 @@ const recordHandleWithStore = (
     sendAll,
     sendForked
   }
-}
+})
 
 /**
  * AgentRuntime composes AgentSdk, QuerySupervisor, and runtime policies.
@@ -333,7 +340,7 @@ export class AgentRuntime extends Context.Tag("@effect/claude-agent-sdk/AgentRun
             let decorated = handle
 
             if (settings.enabled.chatHistory) {
-              decorated = recordHandleWithStore(
+              decorated = yield* recordHandleWithStore(
                 decorated,
                 chatHistoryStore,
                 options?.history

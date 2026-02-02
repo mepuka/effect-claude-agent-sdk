@@ -3,7 +3,7 @@ import * as Layer from "effect/Layer"
 import * as Stream from "effect/Stream"
 import { AgentRuntime, Storage } from "../src/index.js"
 
-const storageDir = "/storage"
+const storageDir = "storage"
 const storageLayers = Storage.layersFileSystemBun({ directory: storageDir })
 
 const program = Effect.scoped(

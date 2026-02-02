@@ -83,6 +83,69 @@ test("SessionIndexStore listPage returns next cursor", async () => {
   expect(result.second.items.map((meta) => meta.sessionId)).toEqual(["session-1"])
 })
 
+test("SessionIndexStore listPage omits next cursor on final page", async () => {
+  const program = Effect.gen(function*() {
+    const index = yield* Storage.SessionIndexStore
+    yield* index.touch("session-1", { createdAt: 1000, updatedAt: 1000 })
+    yield* index.touch("session-2", { createdAt: 1500, updatedAt: 2000 })
+    return yield* index.listPage({ orderBy: "updatedAt", direction: "desc", limit: 2 })
+  }).pipe(Effect.provide(Storage.SessionIndexStore.layerMemory))
+
+  const result = await Effect.runPromise(program)
+  expect(result.items.map((meta) => meta.sessionId)).toEqual(["session-2", "session-1"])
+  expect(result.nextCursor).toBeUndefined()
+})
+
+test("SessionIndexStore orders by createdAt asc", async () => {
+  const program = Effect.gen(function*() {
+    const index = yield* Storage.SessionIndexStore
+    yield* index.touch("session-1", { createdAt: 1000, updatedAt: 2000 })
+    yield* index.touch("session-2", { createdAt: 1500, updatedAt: 1500 })
+    yield* index.touch("session-3", { createdAt: 2000, updatedAt: 1000 })
+    const first = yield* index.listPage({ orderBy: "createdAt", direction: "asc", limit: 2 })
+    const second = yield* index.listPage(
+      first.nextCursor
+        ? {
+            orderBy: "createdAt",
+            direction: "asc",
+            cursor: first.nextCursor,
+            limit: 2
+          }
+        : {
+            orderBy: "createdAt",
+            direction: "asc",
+            limit: 2
+          }
+    )
+    return { first, second }
+  }).pipe(Effect.provide(Storage.SessionIndexStore.layerMemory))
+
+  const result = await Effect.runPromise(program)
+  expect(result.first.items.map((meta) => meta.sessionId)).toEqual(["session-1", "session-2"])
+  expect(result.second.items.map((meta) => meta.sessionId)).toEqual(["session-3"])
+  expect(result.second.nextCursor).toBeUndefined()
+})
+
+test("SessionIndexStore applies default limit without StorageConfig", async () => {
+  const program = Effect.gen(function*() {
+    const index = yield* Storage.SessionIndexStore
+    const total = Storage.defaultIndexPageSize + 1
+    for (let i = 0; i < total; i += 1) {
+      yield* index.touch(`session-${i}`, { createdAt: i, updatedAt: i })
+    }
+    const first = yield* index.listPage()
+    const second = first.nextCursor
+      ? yield* index.listPage({ cursor: first.nextCursor })
+      : { items: [] }
+    return { first, second }
+  }).pipe(Effect.provide(Storage.SessionIndexStore.layerMemory))
+
+  const result = await Effect.runPromise(program)
+  expect(result.first.items.length).toBe(Storage.defaultIndexPageSize)
+  expect(result.first.nextCursor).toBeDefined()
+  expect(result.second.items.length).toBe(1)
+})
+
 test("ChatHistoryStore updates SessionIndexStore when provided", async () => {
   const kvLayer = KeyValueStore.layerMemory
   const sessionIndexLayer = Storage.SessionIndexStore.layerKeyValueStore({
