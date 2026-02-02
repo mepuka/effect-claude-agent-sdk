@@ -39,6 +39,9 @@ export type StorageConfigData = {
     readonly interval: Duration.Duration
     readonly runOnStart: boolean
   }
+  readonly sync: {
+    readonly interval: Duration.Duration
+  }
 }
 
 export type StorageConfigSettings = {
@@ -77,6 +80,9 @@ const defaultSettings: StorageConfigData = {
     enabled: true,
     interval: Duration.hours(1),
     runOnStart: false
+  },
+  sync: {
+    interval: Duration.millis(0)
   }
 }
 
@@ -160,6 +166,9 @@ export class StorageConfig extends Context.Tag("@effect/claude-agent-sdk/Storage
       const cleanupRunOnStart = yield* Config.option(
         Config.boolean("STORAGE_CLEANUP_RUN_ON_START")
       )
+      const syncInterval = yield* Config.option(
+        Config.duration("STORAGE_SYNC_INTERVAL")
+      )
 
       const settings: StorageConfigData = {
         enabled: {
@@ -236,6 +245,9 @@ export class StorageConfig extends Context.Tag("@effect/claude-agent-sdk/Storage
             cleanupRunOnStart,
             defaultSettings.cleanup.runOnStart
           )
+        },
+        sync: {
+          interval: normalizeDuration(syncInterval, defaultSettings.sync.interval)
         }
       }
 

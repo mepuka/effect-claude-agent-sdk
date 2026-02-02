@@ -354,7 +354,7 @@ Primary keys:
 ### #12 Implement EventLogRemote sync orchestration
 - [x] SyncService connects and manages EventLogRemote connections.
 - [x] Bidirectional sync works; reconnect resumes from last sequence.
-- [ ] Sync interval configurable via StorageConfig.
+- [x] Sync interval configurable via StorageConfig.
 - [x] Integration test: two replicas converge.
 
 ### #13 Add EventLogRemote server for shared state

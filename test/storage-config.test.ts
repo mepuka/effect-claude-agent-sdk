@@ -30,7 +30,8 @@ test("StorageConfig reads overrides from config provider", async () => {
         STORAGE_INDEX_PAGE_SIZE: "9",
         STORAGE_CLEANUP_ENABLED: "false",
         STORAGE_CLEANUP_INTERVAL: "10 minutes",
-        STORAGE_CLEANUP_RUN_ON_START: "true"
+        STORAGE_CLEANUP_RUN_ON_START: "true",
+        STORAGE_SYNC_INTERVAL: "2 minutes"
       })
     )
   )
@@ -57,4 +58,5 @@ test("StorageConfig reads overrides from config provider", async () => {
   expect(settings.cleanup.enabled).toBe(false)
   expect(Duration.toMillis(settings.cleanup.interval)).toBe(10 * 60 * 1000)
   expect(settings.cleanup.runOnStart).toBe(true)
+  expect(Duration.toMillis(settings.sync.interval)).toBe(2 * 60 * 1000)
 })
