@@ -1,5 +1,11 @@
 # effect-claude-agent-sdk
 
+## 0.4.1
+
+### Patch Changes
+
+- a878e54: Remediate persistence defaults, pagination, and audit logging; update docs/examples.
+
 ## 0.4.0
 
 ### Minor Changes
