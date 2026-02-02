@@ -8,6 +8,8 @@ import * as Layer from "effect/Layer"
 import * as Option from "effect/Option"
 import type { HookEvent } from "../Schema/Hooks.js"
 import { AuditEventSchema, layerAuditHandlers } from "../experimental/EventLog.js"
+import { Compaction, compactEntries } from "../Sync/Compaction.js"
+import type { CompactionStrategy } from "../Sync/Compaction.js"
 import {
   defaultAuditEventJournalKey,
   defaultAuditIdentityKey,
@@ -46,6 +48,28 @@ export type AuditEventInput =
         readonly outcome: "success" | "failure"
       }
     }
+  | {
+      readonly event: "sync_conflict"
+      readonly payload: {
+        readonly remoteId: string
+        readonly event: string
+        readonly primaryKey: string
+        readonly entryId: string
+        readonly conflictCount: number
+        readonly resolution: "accept" | "merge" | "reject"
+        readonly resolvedEntryId?: string
+      }
+    }
+  | {
+      readonly event: "sync_compaction"
+      readonly payload: {
+        readonly remoteId: string
+        readonly before: number
+        readonly after: number
+        readonly events?: ReadonlyArray<string>
+        readonly timestamp: number
+      }
+    }
 
 const storeName = "AuditEventStore"
 
@@ -73,6 +97,34 @@ const resolveAuditKeys = (options?: {
       ? `${options.prefix}/event-log-identity`
       : defaultAuditIdentityKey)
 })
+
+const auditEventTags = [
+  "tool_use",
+  "permission_decision",
+  "hook_event",
+  "sync_conflict",
+  "sync_compaction"
+] as const
+
+const layerAuditJournalCompaction = Layer.scopedDiscard(
+  Effect.gen(function*() {
+    const config = yield* Effect.serviceOption(StorageConfig)
+    if (Option.isNone(config)) return
+    const retention = config.value.settings.retention.audit
+    const strategies: Array<CompactionStrategy> = []
+    strategies.push(Compaction.byAge(retention.maxAge))
+    strategies.push(Compaction.byCount(retention.maxEntries))
+    const strategy = Compaction.composite(...strategies)
+    const log = yield* EventLogModule.EventLog
+    yield* log.registerCompaction({
+      events: auditEventTags,
+      effect: ({ entries, write }) =>
+        compactEntries(strategy, entries).pipe(
+          Effect.flatMap((kept) => Effect.forEach(kept, write, { discard: true }))
+        )
+    })
+  })
+)
 
 const makeStore = Effect.gen(function*() {
   const log = yield* EventLogModule.EventLog
@@ -111,11 +163,15 @@ export class AuditEventStore extends Context.Tag("@effect/claude-agent-sdk/Audit
     makeStore
   ).pipe(
     Layer.provide(
-      EventLogModule.layerEventLog.pipe(
-        Layer.provide(EventJournal.layerMemory),
-        Layer.provide(Layer.sync(EventLogModule.Identity, () => EventLogModule.Identity.makeRandom())),
-        Layer.provide(layerAuditHandlers)
-      )
+      (() => {
+        const baseLayer = EventLogModule.layerEventLog.pipe(
+          Layer.provide(EventJournal.layerMemory),
+          Layer.provide(Layer.sync(EventLogModule.Identity, () => EventLogModule.Identity.makeRandom())),
+          Layer.provide(layerAuditHandlers)
+        )
+        const compactionLayer = layerAuditJournalCompaction.pipe(Layer.provide(baseLayer))
+        return Layer.merge(baseLayer, compactionLayer)
+      })()
     )
   )
 
@@ -125,17 +181,21 @@ export class AuditEventStore extends Context.Tag("@effect/claude-agent-sdk/Audit
   }) =>
     Layer.effect(AuditEventStore, makeStore).pipe(
       Layer.provide(
-        EventLogModule.layerEventLog.pipe(
-          Layer.provide(
-            layerEventJournalKeyValueStore(
-              options?.journalKey ? { key: options.journalKey } : undefined
-            )
-          ),
-          Layer.provide(EventLogModule.layerIdentityKvs({
-            key: options?.identityKey ?? defaultAuditIdentityKey
-          })),
-          Layer.provide(layerAuditHandlers)
-        )
+        (() => {
+          const baseLayer = EventLogModule.layerEventLog.pipe(
+            Layer.provide(
+              layerEventJournalKeyValueStore(
+                options?.journalKey ? { key: options.journalKey } : undefined
+              )
+            ),
+            Layer.provide(EventLogModule.layerIdentityKvs({
+              key: options?.identityKey ?? defaultAuditIdentityKey
+            })),
+            Layer.provide(layerAuditHandlers)
+          )
+          const compactionLayer = layerAuditJournalCompaction.pipe(Layer.provide(baseLayer))
+          return Layer.merge(baseLayer, compactionLayer)
+        })()
       )
     )
 

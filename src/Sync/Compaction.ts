@@ -16,6 +16,25 @@ const toBracket = (entries: ReadonlyArray<EventJournal.RemoteEntry>): ReadonlyAr
   [entries.map((entry) => entry.entry), entries]
 ]
 
+const toRemoteEntries = (entries: ReadonlyArray<EventJournal.Entry>) =>
+  entries.map((entry, index) =>
+    new EventJournal.RemoteEntry({
+      remoteSequence: index + 1,
+      entry
+    })
+  )
+
+export const compactEntries = (
+  strategy: CompactionStrategy,
+  entries: ReadonlyArray<EventJournal.Entry>
+) =>
+  strategy(toRemoteEntries(entries)).pipe(
+    Effect.map((brackets) => {
+      const first = brackets[0]
+      return first ? first[0] : []
+    })
+  )
+
 const estimateEntrySize = (entry: EventJournal.Entry) =>
   entry.payload.byteLength +
   entry.event.length +

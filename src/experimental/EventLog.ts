@@ -50,6 +50,24 @@ const HookEventPayload = Schema.Struct({
   outcome: Schema.Literal("success", "failure")
 })
 
+const SyncConflictPayload = Schema.Struct({
+  remoteId: Schema.String,
+  event: Schema.String,
+  primaryKey: Schema.String,
+  entryId: Schema.String,
+  conflictCount: Schema.Number,
+  resolution: Schema.Literal("accept", "merge", "reject"),
+  resolvedEntryId: Schema.optional(Schema.String)
+})
+
+const SyncCompactionPayload = Schema.Struct({
+  remoteId: Schema.String,
+  before: Schema.Number,
+  after: Schema.Number,
+  events: Schema.optional(Schema.Array(Schema.String)),
+  timestamp: Schema.Number
+})
+
 /**
  * Event group definitions for auditing tool use, permissions, and hook events.
  */
@@ -71,6 +89,17 @@ export const AuditEventGroup = EventGroupModule.empty
     payload: HookEventPayload,
     primaryKey: (payload) =>
       `${payload.sessionId ?? "unknown"}:${payload.hook}:${payload.outcome}`
+  })
+  .add({
+    tag: "sync_conflict",
+    payload: SyncConflictPayload,
+    primaryKey: (payload) =>
+      `${payload.remoteId}:${payload.event}:${payload.primaryKey}:${payload.entryId}`
+  })
+  .add({
+    tag: "sync_compaction",
+    payload: SyncCompactionPayload,
+    primaryKey: (payload) => `${payload.remoteId}:${payload.timestamp}`
   })
 
 /**
@@ -105,4 +134,6 @@ export const layerAuditHandlers = EventLogModule.group(AuditEventGroup, (handler
     .handle("tool_use", () => Effect.void)
     .handle("permission_decision", () => Effect.void)
     .handle("hook_event", () => Effect.void)
+    .handle("sync_conflict", () => Effect.void)
+    .handle("sync_compaction", () => Effect.void)
 )

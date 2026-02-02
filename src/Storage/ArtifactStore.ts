@@ -11,6 +11,8 @@ import * as Schema from "effect/Schema"
 import * as SynchronizedRef from "effect/SynchronizedRef"
 import { ArtifactRecord } from "../Schema/Storage.js"
 import { SyncService } from "../Sync/SyncService.js"
+import { Compaction, compactEntries } from "../Sync/Compaction.js"
+import type { CompactionStrategy } from "../Sync/Compaction.js"
 import {
   defaultArtifactEventJournalKey,
   defaultArtifactIdentityKey,
@@ -383,6 +385,34 @@ const layerArtifactJournalHandlers = (options?: {
       )
   )
 
+const layerArtifactJournalCompaction = Layer.scopedDiscard(
+  Effect.gen(function*() {
+    const retention = yield* resolveRetention
+    if (!retention) return
+    const strategies: Array<CompactionStrategy> = []
+    if (retention.maxAgeMs !== undefined) {
+      strategies.push(Compaction.byAge(retention.maxAgeMs))
+    }
+    if (retention.maxArtifacts !== undefined) {
+      strategies.push(Compaction.byCount(retention.maxArtifacts))
+    }
+    if (retention.maxArtifactBytes !== undefined) {
+      strategies.push(Compaction.bySize(retention.maxArtifactBytes))
+    }
+    if (strategies.length === 0) return
+    const strategy =
+      strategies.length === 1 ? strategies[0]! : Compaction.composite(...strategies)
+    const log = yield* EventLogModule.EventLog
+    yield* log.registerCompaction({
+      events: [ArtifactEventTag, ArtifactDeleteTag],
+      effect: ({ entries, write }) =>
+        compactEntries(strategy, entries).pipe(
+          Effect.flatMap((kept) => Effect.forEach(kept, write, { discard: true }))
+        )
+    })
+  })
+)
+
 const journaledEventLogLayer: (options?: {
   readonly prefix?: string
   readonly journalKey?: string
@@ -391,7 +421,7 @@ const journaledEventLogLayer: (options?: {
   options
 ) => {
   const keys = resolveJournalKeys(options)
-  return EventLogModule.layerEventLog.pipe(
+  const baseLayer = EventLogModule.layerEventLog.pipe(
     Layer.provide(
       layerEventJournalKeyValueStore(
         { key: keys.journalKey }
@@ -402,6 +432,8 @@ const journaledEventLogLayer: (options?: {
     })),
     Layer.provide(layerArtifactJournalHandlers(options))
   )
+  const compactionLayer = layerArtifactJournalCompaction.pipe(Layer.provide(baseLayer))
+  return Layer.merge(baseLayer, compactionLayer)
 }
 
 const makeJournaledStore = (options?: {

@@ -5,6 +5,9 @@ import * as Layer from "effect/Layer"
 import * as Option from "effect/Option"
 import * as PubSub from "effect/PubSub"
 import * as Schema from "effect/Schema"
+import { ConflictPolicy } from "../Sync/ConflictPolicy.js"
+import type { ConflictResolution } from "../Sync/ConflictPolicy.js"
+import { SyncAudit } from "../Sync/SyncAudit.js"
 import { defaultAuditEventJournalKey } from "./defaults.js"
 
 const defaultKey = defaultAuditEventJournalKey
@@ -42,6 +45,19 @@ const persistEntries = (
       )
     )
   )
+
+const resolveDefaultConflict = (
+  entry: EventJournal.Entry,
+  conflicts: ReadonlyArray<EventJournal.Entry>
+): ConflictResolution => {
+  let latest = entry
+  for (const conflict of conflicts) {
+    if (conflict.createdAtMillis >= latest.createdAtMillis) {
+      latest = conflict
+    }
+  }
+  return { _tag: "accept", entry: latest }
+}
 
 export const make = (options?: { readonly key?: string }) =>
   Effect.gen(function*() {
@@ -113,7 +129,59 @@ export const make = (options?: { readonly key?: string }) =>
             ? yield* options.compact(uncommittedRemotes)
             : [[uncommitted, uncommittedRemotes]] as const
 
+          const policyOption = yield* Effect.serviceOption(ConflictPolicy)
+          const auditOption = yield* Effect.serviceOption(SyncAudit)
+          const remoteIdString = remoteIdToString(options.remoteId)
+
+          const resolveConflict = (
+            entry: EventJournal.Entry,
+            conflicts: ReadonlyArray<EventJournal.Entry>
+          ) =>
+            Option.match(policyOption, {
+              onNone: () => Effect.succeed(resolveDefaultConflict(entry, conflicts)),
+              onSome: (policy) => policy.resolve({ entry, conflicts })
+            })
+
+          const emitConflict = (
+            entry: EventJournal.Entry,
+            conflicts: ReadonlyArray<EventJournal.Entry>,
+            resolution: ConflictResolution
+          ) =>
+            Option.match(auditOption, {
+              onNone: () => Effect.void,
+              onSome: (audit) =>
+                audit.conflict({
+                  remoteId: remoteIdString,
+                  entry,
+                  conflicts,
+                  resolution
+                })
+            })
+
+          const emitCompaction = (
+            before: number,
+            after: number,
+            events: ReadonlyArray<string>
+          ) =>
+            Option.match(auditOption, {
+              onNone: () => Effect.void,
+              onSome: (audit) =>
+                audit.compaction({
+                  remoteId: remoteIdString,
+                  before,
+                  after,
+                  events
+                })
+            })
+
           for (const [compacted, remoteEntries] of brackets) {
+            if (remoteEntries.length > compacted.length) {
+              const events = Array.from(
+                new Set(remoteEntries.map((remoteEntry) => remoteEntry.entry.event))
+              )
+              yield* emitCompaction(remoteEntries.length, compacted.length, events)
+            }
+            const accepted: Array<EventJournal.Entry> = []
             for (const originEntry of compacted) {
               const entryMillis = EventJournal.entryIdMillis(originEntry.id)
               const conflicts: Array<EventJournal.Entry> = []
@@ -128,17 +196,33 @@ export const make = (options?: { readonly key?: string }) =>
                     conflicts.push(check)
                   }
                 }
-                yield* options.effect({ entry: originEntry, conflicts })
+                let resolution = resolveDefaultConflict(originEntry, conflicts)
+                if (conflicts.length > 0) {
+                  resolution = yield* resolveConflict(originEntry, conflicts)
+                  yield* emitConflict(originEntry, conflicts, resolution)
+                }
+                if (resolution._tag !== "reject") {
+                  const resolvedEntry = resolution.entry
+                  if (!byId.has(resolvedEntry.idString)) {
+                    yield* options.effect({ entry: resolvedEntry, conflicts })
+                    accepted.push(resolvedEntry)
+                  }
+                }
                 break
               }
             }
+            for (const entry of accepted) {
+              journal.push(entry)
+              byId.set(entry.idString, entry)
+            }
             for (const remoteEntry of remoteEntries) {
-              journal.push(remoteEntry.entry)
               if (remoteEntry.remoteSequence > remote.sequence) {
                 remote.sequence = remoteEntry.remoteSequence
               }
             }
-            journal.sort((a, b) => a.createdAtMillis - b.createdAtMillis)
+            if (accepted.length > 0) {
+              journal.sort((a, b) => a.createdAtMillis - b.createdAtMillis)
+            }
           }
 
           yield* persistEntries(kv, key, journal)

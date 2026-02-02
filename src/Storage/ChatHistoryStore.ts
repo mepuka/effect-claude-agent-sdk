@@ -12,6 +12,8 @@ import * as SynchronizedRef from "effect/SynchronizedRef"
 import * as Schema from "effect/Schema"
 import type { SDKMessage } from "../Schema/Message.js"
 import { ChatEvent, ChatEventSource } from "../Schema/Storage.js"
+import { Compaction, compactEntries } from "../Sync/Compaction.js"
+import type { CompactionStrategy } from "../Sync/Compaction.js"
 import { SyncService } from "../Sync/SyncService.js"
 import {
   defaultChatEventJournalKey,
@@ -327,9 +329,34 @@ const layerChatJournalHandlers = (options?: {
         yield* touchSessionIndex(event.sessionId, event.timestamp)
       }).pipe(
         Effect.mapError((cause) => mapError("journalHandler", cause))
+        )
       )
-    )
   )
+
+const layerChatJournalCompaction = Layer.scopedDiscard(
+  Effect.gen(function*() {
+    const retention = yield* resolveRetention
+    if (!retention) return
+    const strategies: Array<CompactionStrategy> = []
+    if (retention.maxAgeMs !== undefined) {
+      strategies.push(Compaction.byAge(retention.maxAgeMs))
+    }
+    if (retention.maxEvents !== undefined) {
+      strategies.push(Compaction.byCount(retention.maxEvents))
+    }
+    if (strategies.length === 0) return
+    const strategy =
+      strategies.length === 1 ? strategies[0]! : Compaction.composite(...strategies)
+    const log = yield* EventLogModule.EventLog
+    yield* log.registerCompaction({
+      events: [ChatEventTag],
+      effect: ({ entries, write }) =>
+        compactEntries(strategy, entries).pipe(
+          Effect.flatMap((kept) => Effect.forEach(kept, write, { discard: true }))
+        )
+    })
+  })
+)
 
 const journaledEventLogLayer: (options?: {
   readonly prefix?: string
@@ -339,7 +366,7 @@ const journaledEventLogLayer: (options?: {
   options
 ) => {
   const keys = resolveJournalKeys(options)
-  return EventLogModule.layerEventLog.pipe(
+  const baseLayer = EventLogModule.layerEventLog.pipe(
     Layer.provide(
       layerEventJournalKeyValueStore(
         { key: keys.journalKey }
@@ -350,6 +377,8 @@ const journaledEventLogLayer: (options?: {
     })),
     Layer.provide(layerChatJournalHandlers(options))
   )
+  const compactionLayer = layerChatJournalCompaction.pipe(Layer.provide(baseLayer))
+  return Layer.merge(baseLayer, compactionLayer)
 }
 
 const makeJournaledStore = (options?: {
