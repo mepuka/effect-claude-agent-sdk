@@ -11,6 +11,7 @@ export type EventLogRemoteServerOptions = {
   readonly port?: number
   readonly hostname?: string
   readonly path?: string
+  readonly scheme?: "ws" | "wss"
   readonly storage?: Layer.Layer<EventLogServer.Storage>
 }
 
@@ -19,6 +20,7 @@ export const toWebSocketUrl = (
   options?: {
     readonly path?: string
     readonly hostname?: string
+    readonly scheme?: "ws" | "wss"
   }
 ) => {
   if (address._tag !== "TcpAddress") {
@@ -27,7 +29,8 @@ export const toWebSocketUrl = (
   const hostname = options?.hostname ?? address.hostname
   const resolvedHostname = hostname === "0.0.0.0" ? "127.0.0.1" : hostname
   const path = options?.path ?? "/event-log"
-  return `ws://${resolvedHostname}:${address.port}${path}`
+  const scheme = options?.scheme ?? "ws"
+  return `${scheme}://${resolvedHostname}:${address.port}${path}`
 }
 
 export class EventLogRemoteServer extends Context.Tag("@effect/claude-agent-sdk/EventLogRemoteServer")<
@@ -107,7 +110,11 @@ export const layerBunWebSocket = (options: EventLogRemoteServerOptions = {}) => 
         address: server.address,
         url: toWebSocketUrl(
           server.address,
-          options.hostname ? { path, hostname: options.hostname } : { path }
+          {
+            path,
+            ...(options.hostname !== undefined ? { hostname: options.hostname } : {}),
+            ...(options.scheme !== undefined ? { scheme: options.scheme } : {})
+          }
         )
       })
     )
@@ -137,7 +144,11 @@ export const layerBunWebSocketTest = (options: EventLogRemoteServerOptions = {})
         address: server.address,
         url: toWebSocketUrl(
           server.address,
-          options.hostname ? { path, hostname: options.hostname } : { path }
+          {
+            path,
+            ...(options.hostname !== undefined ? { hostname: options.hostname } : {}),
+            ...(options.scheme !== undefined ? { scheme: options.scheme } : {})
+          }
         )
       })
     )

@@ -61,7 +61,10 @@ Effect service responsible for connecting EventLog to remote(s) and reporting st
 API (proposed):
 ```ts
 export type RemoteStatus = {
+  readonly key: string
+  readonly kind: "remoteId" | "url"
   readonly remoteId: string
+  readonly url?: string
   readonly connected: boolean
   readonly lastSyncAt?: number
   readonly lastError?: string
@@ -72,11 +75,17 @@ export class SyncService extends Context.Tag("@effect/claude-agent-sdk/SyncServi
   {
     readonly connect: (remote: EventLogRemote.EventLogRemote) => Effect.Effect<void>
     readonly disconnect: (remoteId: string) => Effect.Effect<void>
+    readonly disconnectRemoteId: (remoteId: string) => Effect.Effect<void>
+    readonly disconnectWebSocket: (url: string) => Effect.Effect<void>
     readonly syncNow: () => Effect.Effect<void>
     readonly status: () => Effect.Effect<ReadonlyArray<RemoteStatus>>
+    readonly statusStream: () => Stream.Stream<ReadonlyArray<RemoteStatus>>
   }
 >() {
-  static readonly layerWebSocket: (url: string, options?: { disablePing?: boolean }) => Layer.Layer<SyncService>
+  static readonly layerWebSocket: (url: string, options?: {
+    disablePing?: boolean
+    syncInterval?: DurationInput
+  }) => Layer.Layer<SyncService>
   static readonly layerSocket: (host: string, port: number, options?: { disablePing?: boolean }) => Layer.Layer<SyncService>
   static readonly layerMemory: Layer.Layer<SyncService>
 }
@@ -87,6 +96,7 @@ Notes:
 - Each connection scopes `EventLog.registerRemote` for the EventLog in context.
 - `syncNow` triggers a manual push by re-running the `withRemoteUncommited` flow or re-registering.
 - `status` is in-memory (per process). No remote persistence requirement.
+- `syncInterval` can be configured directly on `SyncService.layerWebSocket` (fallback to StorageConfig when omitted).
 
 ### 2) EventLogRemoteServer
 Service wrapping `EventLogServer` with Bun WebSocket support.
@@ -381,6 +391,13 @@ Primary keys:
 - [x] Selective sync config works.
 - [ ] Migration utility or documented path (skipped for greenfield).
 - [x] No breaking changes for existing KV layers.
+
+### UX follow-ups
+- [x] Disambiguate remote identifiers (key/kind in status + explicit disconnect helpers).
+- [x] Update lastSyncAt on actual sync activity.
+- [x] Allow explicit sync interval config at the SyncService layer.
+- [x] Add wss scheme support for server URL helpers.
+- [x] Provide a one-liner remote-sync storage wiring helper.
 
 ## Example Usage (Sketch)
 ```ts

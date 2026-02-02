@@ -1,9 +1,11 @@
-import { BunFileSystem, BunPath } from "@effect/platform-bun"
+import { BunFileSystem, BunKeyValueStore, BunPath } from "@effect/platform-bun"
+import type * as Duration from "effect/Duration"
 import * as Layer from "effect/Layer"
 import { ArtifactStore } from "./ArtifactStore.js"
 import { AuditEventStore } from "./AuditEventStore.js"
 import { ChatHistoryStore } from "./ChatHistoryStore.js"
 import { SessionIndexStore } from "./SessionIndexStore.js"
+import { defaultStorageDirectory } from "./defaults.js"
 
 export type StorageLayerOptions = {
   readonly directory?: string
@@ -14,6 +16,13 @@ export type StorageLayers<E = unknown, R = unknown> = {
   readonly artifacts: Layer.Layer<ArtifactStore, E, R>
   readonly auditLog: Layer.Layer<AuditEventStore, E, R>
   readonly sessionIndex: Layer.Layer<SessionIndexStore, E, R>
+}
+
+export type StorageSyncLayerOptions = StorageLayerOptions & {
+  readonly syncInterval?: Duration.DurationInput
+  readonly disablePing?: boolean
+  readonly syncChatHistory?: boolean
+  readonly syncArtifacts?: boolean
 }
 
 const resolveDirectory = (directory: string | undefined) =>
@@ -137,4 +146,49 @@ export const layerFileSystemBunJournaled = (options?: StorageLayerOptions) => {
     layers.auditLog,
     layers.sessionIndex
   )
+}
+
+export const layersFileSystemBunJournaledWithSyncWebSocket = (
+  url: string,
+  options?: StorageSyncLayerOptions
+): StorageLayers<unknown, never> => {
+  const directory = options?.directory
+  const syncInterval = options?.syncInterval
+  const disablePing = options?.disablePing
+  const syncChatHistory = options?.syncChatHistory ?? true
+  const syncArtifacts = options?.syncArtifacts ?? false
+  const kvsLayer = BunKeyValueStore.layerFileSystem(
+    directory ?? defaultStorageDirectory
+  )
+
+  const baseLayers = layersFileSystemBunJournaled(
+    directory !== undefined ? { directory } : undefined
+  )
+
+  return {
+    chatHistory: syncChatHistory
+      ? ChatHistoryStore.layerJournaledWithSyncWebSocket(
+          url,
+          disablePing !== undefined || syncInterval !== undefined
+            ? {
+                ...(disablePing !== undefined ? { disablePing } : {}),
+                ...(syncInterval !== undefined ? { syncInterval } : {})
+              }
+            : undefined
+        ).pipe(Layer.provide(kvsLayer))
+      : baseLayers.chatHistory,
+    artifacts: syncArtifacts
+      ? ArtifactStore.layerJournaledWithSyncWebSocket(
+          url,
+          disablePing !== undefined || syncInterval !== undefined
+            ? {
+                ...(disablePing !== undefined ? { disablePing } : {}),
+                ...(syncInterval !== undefined ? { syncInterval } : {})
+              }
+            : undefined
+        ).pipe(Layer.provide(kvsLayer))
+      : baseLayers.artifacts,
+    auditLog: baseLayers.auditLog,
+    sessionIndex: baseLayers.sessionIndex
+  }
 }
