@@ -110,21 +110,25 @@
 ## Layer Composition
 
 ```typescript
-// Full setup with remote sync
+// Full setup with remote sync (chat history example)
+const chatLayer = ChatHistoryStore.layerJournaledWithSyncWebSocket(serverUrl)
+
 AgentRuntime.layerWithPersistence({
   layers: {
     runtime:      AgentRuntime.layerDefaultFromEnv(),
-    chatHistory:  ChatHistoryStore.layerJournaled(),    // #16
-    artifacts:    ArtifactStore.layerJournaled(),        // #16
+    chatHistory:  chatLayer,                                 // #16 + sync
+    artifacts:    ArtifactStore.layerJournaled(),            // #16
     auditLog:     AuditEventStore.layerFileSystemBun(),
     sessionIndex: SessionIndexStore.layerFileSystemBun(),
   }
 }).pipe(
-  Layer.provide(SyncService.layerWebSocket(serverUrl)),  // #12
-  Layer.provide(ConflictPolicy.layerLastWriteWins()),    // #15
-  Layer.provide(Compaction.layerByAge("30 days")),       // #14
+  Layer.provide(ConflictPolicy.layerLastWriteWins()),       // #15
+  Layer.provide(Compaction.layerByAge("30 days")),          // #14
   Layer.provide(StorageConfig.layerFromEnv()),
 )
+
+// Note: each journaled store owns its own EventLog. To sync artifacts too,
+// use `ArtifactStore.layerJournaledWithSyncWebSocket(serverUrl)`.
 ```
 
 ## Issue Tracker

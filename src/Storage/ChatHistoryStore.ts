@@ -12,6 +12,7 @@ import * as SynchronizedRef from "effect/SynchronizedRef"
 import * as Schema from "effect/Schema"
 import type { SDKMessage } from "../Schema/Message.js"
 import { ChatEvent, ChatEventSource } from "../Schema/Storage.js"
+import { SyncService } from "../Sync/SyncService.js"
 import {
   defaultChatEventJournalKey,
   defaultChatHistoryPrefix,
@@ -34,6 +35,13 @@ export type ChatHistoryListOptions = {
   readonly endSequence?: number
   readonly limit?: number
   readonly reverse?: boolean
+}
+
+export type ChatHistorySyncOptions = {
+  readonly prefix?: string
+  readonly journalKey?: string
+  readonly identityKey?: string
+  readonly disablePing?: boolean
 }
 
 const defaultSource: ChatEventSource = "sdk"
@@ -322,6 +330,289 @@ const layerChatJournalHandlers = (options?: {
       )
     )
   )
+
+const journaledEventLogLayer = (options?: {
+  readonly prefix?: string
+  readonly journalKey?: string
+  readonly identityKey?: string
+}) => {
+  const keys = resolveJournalKeys(options)
+  return EventLogModule.layerEventLog.pipe(
+    Layer.provide(
+      layerEventJournalKeyValueStore(
+        { key: keys.journalKey }
+      )
+    ),
+    Layer.provide(EventLogModule.layerIdentityKvs({
+      key: keys.identityKey
+    })),
+    Layer.provide(layerChatJournalHandlers(options))
+  )
+}
+
+const makeJournaledStore = (options?: {
+  readonly prefix?: string
+  readonly journalKey?: string
+  readonly identityKey?: string
+}) =>
+  Effect.gen(function*() {
+    const kv = yield* KeyValueStore.KeyValueStore
+    const log = yield* EventLogModule.EventLog
+    const prefix = options?.prefix ?? defaultChatHistoryPrefix
+    const eventStore = kv.forSchema(ChatEvent)
+    const metaStore = kv.forSchema(ChatMeta)
+
+    const metaKey = (sessionId: string) => `${prefix}/${sessionId}/meta`
+    const eventKey = (sessionId: string, sequence: number) =>
+      `${prefix}/${sessionId}/event/${sequence}`
+
+    const loadMeta = (sessionId: string) =>
+      metaStore.get(metaKey(sessionId)).pipe(
+        Effect.mapError((cause) =>
+          toStorageError(storeName, "loadMeta", cause)
+        ),
+        Effect.map((maybe) => Option.getOrElse(maybe, () => ({
+          lastSequence: 0,
+          updatedAt: 0
+        } satisfies ChatMeta)))
+      )
+
+    const appendMessage = Effect.fn("ChatHistoryStore.appendMessage")(
+      function*(sessionId: string, message: SDKMessage, options?: ChatHistoryAppendOptions) {
+        const timestamp = options?.timestamp ?? (yield* Clock.currentTimeMillis)
+        const source = options?.source ?? defaultSource
+        const enabled = yield* resolveEnabled
+        if (!enabled) {
+          return makeEvent(sessionId, 0, timestamp, source, message)
+        }
+        const meta = yield* loadMeta(sessionId)
+        const sequence = meta.lastSequence + 1
+        const event = makeEvent(sessionId, sequence, timestamp, source, message)
+        yield* log.write({
+          schema: ChatEventSchema,
+          event: ChatEventTag,
+          payload: event
+        }).pipe(
+          Effect.mapError((cause) =>
+            toStorageError(storeName, "appendMessage", cause)
+          )
+        )
+        return event
+      }
+    )
+
+    const appendMessages = Effect.fn("ChatHistoryStore.appendMessages")(
+      function*(sessionId: string, messages: Iterable<SDKMessage>, options?: ChatHistoryAppendOptions) {
+        const timestamp = options?.timestamp ?? (yield* Clock.currentTimeMillis)
+        const source = options?.source ?? defaultSource
+        const enabled = yield* resolveEnabled
+        const batch = Array.from(messages)
+        if (batch.length === 0) return []
+        if (!enabled) {
+          return batch.map((message) => makeEvent(sessionId, 0, timestamp, source, message))
+        }
+        const meta = yield* loadMeta(sessionId)
+        const events = batch.map((message, index) =>
+          makeEvent(sessionId, meta.lastSequence + index + 1, timestamp, source, message)
+        )
+        yield* Effect.forEach(
+          events,
+          (event) =>
+            log.write({
+              schema: ChatEventSchema,
+              event: ChatEventTag,
+              payload: event
+            }).pipe(
+              Effect.mapError((cause) =>
+                toStorageError(storeName, "appendMessages", cause)
+              )
+            ),
+          { discard: true }
+        )
+        return events
+      }
+    )
+
+    const list = Effect.fn("ChatHistoryStore.list")(function*(
+      sessionId: string,
+      options?: ChatHistoryListOptions
+    ) {
+      const config = yield* Effect.serviceOption(StorageConfig)
+      const defaultLimit = Option.getOrUndefined(
+        Option.map(config, (value) => value.settings.pagination.chatPageSize)
+      )
+      const metaOption = yield* metaStore.get(metaKey(sessionId)).pipe(
+        Effect.mapError((cause) =>
+          toStorageError(storeName, "list", cause)
+        )
+      )
+      if (Option.isNone(metaOption)) return []
+
+      const meta = metaOption.value
+      const limitOverride = resolveListLimit(options, defaultLimit)
+      const rangeOptions =
+        limitOverride === undefined
+          ? options
+          : { ...(options ?? {}), limit: limitOverride }
+      const { start, end, limit, reverse } = normalizeRange(
+        meta.lastSequence,
+        rangeOptions
+      )
+      if (limit <= 0) return []
+      const sequences = range(start, end, reverse, limit)
+
+      const events = yield* Effect.forEach(
+        sequences,
+        (sequence) =>
+          eventStore.get(eventKey(sessionId, sequence)).pipe(
+            Effect.mapError((cause) =>
+              toStorageError(storeName, "list", cause)
+            )
+          ),
+        { discard: false }
+      )
+
+      return events.flatMap((eventOption) =>
+        Option.isSome(eventOption) ? [eventOption.value] : []
+      )
+    })
+
+    const stream = (sessionId: string, options?: ChatHistoryListOptions) =>
+      Stream.unwrap(list(sessionId, options).pipe(Effect.map(Stream.fromIterable)))
+
+    const purge = Effect.fn("ChatHistoryStore.purge")((sessionId: string) =>
+      Effect.gen(function*() {
+        const metaOption = yield* metaStore.get(metaKey(sessionId)).pipe(
+          Effect.mapError((cause) =>
+            toStorageError(storeName, "purge", cause)
+          )
+        )
+        if (Option.isNone(metaOption)) return
+
+        const lastSequence = metaOption.value.lastSequence
+        const sequences = range(1, lastSequence, false, lastSequence)
+        yield* Effect.forEach(
+          sequences,
+          (sequence) =>
+            eventStore.remove(eventKey(sessionId, sequence)).pipe(
+              Effect.mapError((cause) =>
+                toStorageError(storeName, "purge", cause)
+              )
+            ),
+          { discard: true }
+        )
+        yield* metaStore.remove(metaKey(sessionId)).pipe(
+          Effect.mapError((cause) =>
+            toStorageError(storeName, "purge", cause)
+          )
+        )
+        yield* removeSessionIndex(sessionId)
+      })
+    )
+
+    const cleanup = Effect.fn("ChatHistoryStore.cleanup")(function*() {
+      const enabled = yield* resolveEnabled
+      if (!enabled) return
+      const retention = yield* resolveRetention
+      if (!retention) return
+      const indexOption = yield* Effect.serviceOption(SessionIndexStore)
+      if (Option.isNone(indexOption)) return
+      const sessionIds = yield* indexOption.value.listIds()
+      if (sessionIds.length === 0) return
+      const now = yield* Clock.currentTimeMillis
+      yield* Effect.forEach(
+        sessionIds,
+        (sessionId) =>
+          metaStore.get(metaKey(sessionId)).pipe(
+            Effect.mapError((cause) =>
+              toStorageError(storeName, "cleanup", cause)
+            ),
+            Effect.flatMap((metaOption) =>
+              Option.isNone(metaOption)
+                ? Effect.void
+                : Effect.gen(function*() {
+                  const meta = metaOption.value
+                  const retentionValue = retention
+                  if (!retentionValue) return
+                  const removals = new Set<number>()
+
+                  if (retentionValue.maxEvents !== undefined) {
+                    const maxEvents = retentionValue.maxEvents
+                    if (maxEvents <= 0) {
+                      for (let seq = 1; seq <= meta.lastSequence; seq += 1) {
+                        removals.add(seq)
+                      }
+                    } else if (meta.lastSequence > maxEvents) {
+                      const limit = meta.lastSequence - maxEvents
+                      for (let seq = 1; seq <= limit; seq += 1) {
+                        removals.add(seq)
+                      }
+                    }
+                  }
+
+                  if (retentionValue.maxAgeMs !== undefined) {
+                    const cutoff = now - retentionValue.maxAgeMs
+                    const sequences = range(1, meta.lastSequence, false, meta.lastSequence)
+                    const events = yield* Effect.forEach(
+                      sequences,
+                      (sequence) =>
+                        eventStore.get(eventKey(sessionId, sequence)).pipe(
+                          Effect.mapError((cause) =>
+                            toStorageError(storeName, "retention", cause)
+                          )
+                        ),
+                      { discard: false }
+                    )
+
+                    events.forEach((eventOption, index) => {
+                      if (Option.isNone(eventOption)) return
+                      if (eventOption.value.timestamp < cutoff) {
+                        removals.add(sequences[index]!)
+                      }
+                    })
+                  }
+
+                  if (removals.size === 0) return
+
+                  yield* Effect.forEach(
+                    Array.from(removals.values()),
+                    (sequence) =>
+                      eventStore.remove(eventKey(sessionId, sequence)).pipe(
+                        Effect.mapError((cause) =>
+                          toStorageError(storeName, "retention", cause)
+                        )
+                      ),
+                    { discard: true }
+                  )
+
+                  const currentSequences = range(1, meta.lastSequence, false, meta.lastSequence)
+                  const retained = currentSequences.filter((sequence) => !removals.has(sequence))
+                  const nextLastSequence = retained.length > 0 ? retained[retained.length - 1]! : 0
+
+                  yield* metaStore.set(metaKey(sessionId), {
+                    lastSequence: nextLastSequence,
+                    updatedAt: meta.updatedAt
+                  }).pipe(
+                    Effect.mapError((cause) =>
+                      toStorageError(storeName, "retention", cause)
+                    )
+                  )
+                })
+            )
+          ),
+        { discard: true }
+      )
+    })
+
+    return ChatHistoryStore.of({
+      appendMessage,
+      appendMessages,
+      list,
+      stream,
+      purge,
+      cleanup
+    })
+  })
 
 export class ChatHistoryStore extends Context.Tag("@effect/claude-agent-sdk/ChatHistoryStore")<
   ChatHistoryStore,
@@ -749,266 +1040,28 @@ export class ChatHistoryStore extends Context.Tag("@effect/claude-agent-sdk/Chat
     readonly journalKey?: string
     readonly identityKey?: string
   }) =>
-    Layer.effect(
-      ChatHistoryStore,
-      Effect.gen(function*() {
-        const kv = yield* KeyValueStore.KeyValueStore
-        const log = yield* EventLogModule.EventLog
-        const prefix = options?.prefix ?? defaultChatHistoryPrefix
-        const eventStore = kv.forSchema(ChatEvent)
-        const metaStore = kv.forSchema(ChatMeta)
+    Layer.effect(ChatHistoryStore, makeJournaledStore(options)).pipe(
+      Layer.provide(journaledEventLogLayer(options))
+    )
 
-        const metaKey = (sessionId: string) => `${prefix}/${sessionId}/meta`
-        const eventKey = (sessionId: string, sequence: number) =>
-          `${prefix}/${sessionId}/event/${sequence}`
+  static readonly layerJournaledWithEventLog = (options?: {
+    readonly prefix?: string
+    readonly journalKey?: string
+    readonly identityKey?: string
+  }) =>
+    journaledEventLogLayer(options).pipe(
+      Layer.provideMerge(
+        Layer.effect(ChatHistoryStore, makeJournaledStore(options))
+      )
+    )
 
-        const loadMeta = (sessionId: string) =>
-          metaStore.get(metaKey(sessionId)).pipe(
-            Effect.mapError((cause) =>
-              toStorageError(storeName, "loadMeta", cause)
-            ),
-            Effect.map((maybe) => Option.getOrElse(maybe, () => ({
-              lastSequence: 0,
-              updatedAt: 0
-            } satisfies ChatMeta)))
-          )
-
-        const appendMessage = Effect.fn("ChatHistoryStore.appendMessage")(
-          function*(sessionId: string, message: SDKMessage, options?: ChatHistoryAppendOptions) {
-            const timestamp = options?.timestamp ?? (yield* Clock.currentTimeMillis)
-            const source = options?.source ?? defaultSource
-            const enabled = yield* resolveEnabled
-            if (!enabled) {
-              return makeEvent(sessionId, 0, timestamp, source, message)
-            }
-            const meta = yield* loadMeta(sessionId)
-            const sequence = meta.lastSequence + 1
-            const event = makeEvent(sessionId, sequence, timestamp, source, message)
-            yield* log.write({
-              schema: ChatEventSchema,
-              event: ChatEventTag,
-              payload: event
-            }).pipe(
-              Effect.mapError((cause) =>
-                toStorageError(storeName, "appendMessage", cause)
-              )
-            )
-            return event
-          }
-        )
-
-        const appendMessages = Effect.fn("ChatHistoryStore.appendMessages")(
-          function*(sessionId: string, messages: Iterable<SDKMessage>, options?: ChatHistoryAppendOptions) {
-            const timestamp = options?.timestamp ?? (yield* Clock.currentTimeMillis)
-            const source = options?.source ?? defaultSource
-            const enabled = yield* resolveEnabled
-            const batch = Array.from(messages)
-            if (batch.length === 0) return []
-            if (!enabled) {
-              return batch.map((message) => makeEvent(sessionId, 0, timestamp, source, message))
-            }
-            const meta = yield* loadMeta(sessionId)
-            const events = batch.map((message, index) =>
-              makeEvent(sessionId, meta.lastSequence + index + 1, timestamp, source, message)
-            )
-            yield* Effect.forEach(
-              events,
-              (event) =>
-                log.write({
-                  schema: ChatEventSchema,
-                  event: ChatEventTag,
-                  payload: event
-                }).pipe(
-                  Effect.mapError((cause) =>
-                    toStorageError(storeName, "appendMessages", cause)
-                  )
-                ),
-              { discard: true }
-            )
-            return events
-          }
-        )
-
-        const list = Effect.fn("ChatHistoryStore.list")(function*(
-          sessionId: string,
-          options?: ChatHistoryListOptions
-        ) {
-          const config = yield* Effect.serviceOption(StorageConfig)
-          const defaultLimit = Option.getOrUndefined(
-            Option.map(config, (value) => value.settings.pagination.chatPageSize)
-          )
-          const metaOption = yield* metaStore.get(metaKey(sessionId)).pipe(
-            Effect.mapError((cause) =>
-              toStorageError(storeName, "list", cause)
-            )
-          )
-          if (Option.isNone(metaOption)) return []
-
-          const meta = metaOption.value
-          const limitOverride = resolveListLimit(options, defaultLimit)
-          const rangeOptions =
-            limitOverride === undefined
-              ? options
-              : { ...(options ?? {}), limit: limitOverride }
-          const { start, end, limit, reverse } = normalizeRange(
-            meta.lastSequence,
-            rangeOptions
-          )
-          if (limit <= 0) return []
-          const sequences = range(start, end, reverse, limit)
-
-          const events = yield* Effect.forEach(
-            sequences,
-            (sequence) =>
-              eventStore.get(eventKey(sessionId, sequence)).pipe(
-                Effect.mapError((cause) =>
-                  toStorageError(storeName, "list", cause)
-                )
-              ),
-            { discard: false }
-          )
-
-          return events.flatMap((eventOption) =>
-            Option.isSome(eventOption) ? [eventOption.value] : []
-          )
-        })
-
-        const stream = (sessionId: string, options?: ChatHistoryListOptions) =>
-          Stream.unwrap(list(sessionId, options).pipe(Effect.map(Stream.fromIterable)))
-
-        const purge = Effect.fn("ChatHistoryStore.purge")((sessionId: string) =>
-          Effect.gen(function*() {
-            const metaOption = yield* metaStore.get(metaKey(sessionId)).pipe(
-              Effect.mapError((cause) =>
-                toStorageError(storeName, "purge", cause)
-              )
-            )
-            if (Option.isNone(metaOption)) return
-
-            const lastSequence = metaOption.value.lastSequence
-            const sequences = range(1, lastSequence, false, lastSequence)
-            yield* Effect.forEach(
-              sequences,
-              (sequence) =>
-                eventStore.remove(eventKey(sessionId, sequence)).pipe(
-                  Effect.mapError((cause) =>
-                    toStorageError(storeName, "purge", cause)
-                  )
-                ),
-              { discard: true }
-            )
-            yield* metaStore.remove(metaKey(sessionId)).pipe(
-              Effect.mapError((cause) =>
-                toStorageError(storeName, "purge", cause)
-              )
-            )
-            yield* removeSessionIndex(sessionId)
-          })
-        )
-
-        const cleanup = Effect.fn("ChatHistoryStore.cleanup")(function*() {
-          const enabled = yield* resolveEnabled
-          if (!enabled) return
-          const retention = yield* resolveRetention
-          if (!retention) return
-          const indexOption = yield* Effect.serviceOption(SessionIndexStore)
-          if (Option.isNone(indexOption)) return
-          const sessionIds = yield* indexOption.value.listIds()
-          if (sessionIds.length === 0) return
-          const now = yield* Clock.currentTimeMillis
-          yield* Effect.forEach(
-            sessionIds,
-            (sessionId) =>
-              metaStore.get(metaKey(sessionId)).pipe(
-                Effect.mapError((cause) =>
-                  toStorageError(storeName, "cleanup", cause)
-                ),
-                Effect.flatMap((metaOption) =>
-                  Option.isNone(metaOption)
-                    ? Effect.void
-                    : Effect.gen(function*() {
-                      const meta = metaOption.value
-                      const retentionValue = retention
-                      if (!retentionValue) return
-                      const removals = new Set<number>()
-
-                      if (retentionValue.maxEvents !== undefined) {
-                        const maxEvents = retentionValue.maxEvents
-                        if (maxEvents <= 0) {
-                          for (let seq = 1; seq <= meta.lastSequence; seq += 1) {
-                            removals.add(seq)
-                          }
-                        } else if (meta.lastSequence > maxEvents) {
-                          const limit = meta.lastSequence - maxEvents
-                          for (let seq = 1; seq <= limit; seq += 1) {
-                            removals.add(seq)
-                          }
-                        }
-                      }
-
-                      if (retentionValue.maxAgeMs !== undefined) {
-                        const cutoff = now - retentionValue.maxAgeMs
-                        const sequences = range(1, meta.lastSequence, false, meta.lastSequence)
-                        const events = yield* Effect.forEach(
-                          sequences,
-                          (sequence) =>
-                            eventStore.get(eventKey(sessionId, sequence)).pipe(
-                              Effect.mapError((cause) =>
-                                toStorageError(storeName, "retention", cause)
-                              )
-                            ),
-                          { discard: false }
-                        )
-
-                        events.forEach((eventOption, index) => {
-                          if (Option.isNone(eventOption)) return
-                          if (eventOption.value.timestamp < cutoff) {
-                            removals.add(sequences[index]!)
-                          }
-                        })
-                      }
-
-                      if (removals.size === 0) return
-
-                      yield* Effect.forEach(
-                        Array.from(removals.values()),
-                        (sequence) =>
-                          eventStore.remove(eventKey(sessionId, sequence)).pipe(
-                            Effect.mapError((cause) =>
-                              toStorageError(storeName, "retention", cause)
-                            )
-                          ),
-                        { discard: true }
-                      )
-                    })
-                )
-              ),
-            { discard: true }
-          )
-        })
-
-        return ChatHistoryStore.of({
-          appendMessage,
-          appendMessages,
-          list,
-          stream,
-          purge,
-          cleanup
-        })
-      })
-    ).pipe(
-      Layer.provide(
-        EventLogModule.layerEventLog.pipe(
-          Layer.provide(
-            layerEventJournalKeyValueStore(
-              { key: resolveJournalKeys(options).journalKey }
-            )
-          ),
-          Layer.provide(EventLogModule.layerIdentityKvs({
-            key: resolveJournalKeys(options).identityKey
-          })),
-          Layer.provide(layerChatJournalHandlers(options))
-        )
+  static readonly layerJournaledWithSyncWebSocket = (
+    url: string,
+    options?: ChatHistorySyncOptions
+  ) =>
+    ChatHistoryStore.layerJournaledWithEventLog(resolveJournaledOptions(options)).pipe(
+      Layer.provideMerge(
+        SyncService.layerWebSocket(url, options?.disablePing ? { disablePing: true } : undefined)
       )
     )
 
