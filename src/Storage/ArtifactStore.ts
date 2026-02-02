@@ -1,5 +1,6 @@
 import { KeyValueStore } from "@effect/platform"
 import { BunKeyValueStore } from "@effect/platform-bun"
+import * as EventLogModule from "@effect/experimental/EventLog"
 import * as Clock from "effect/Clock"
 import * as Context from "effect/Context"
 import * as Duration from "effect/Duration"
@@ -9,10 +10,23 @@ import * as Option from "effect/Option"
 import * as Schema from "effect/Schema"
 import * as SynchronizedRef from "effect/SynchronizedRef"
 import { ArtifactRecord } from "../Schema/Storage.js"
-import { defaultArtifactPrefix, defaultStorageDirectory } from "./defaults.js"
+import {
+  defaultArtifactEventJournalKey,
+  defaultArtifactIdentityKey,
+  defaultArtifactPrefix,
+  defaultStorageDirectory
+} from "./defaults.js"
 import { StorageConfig } from "./StorageConfig.js"
 import { StorageError, toStorageError } from "./StorageError.js"
 import { SessionIndexStore } from "./SessionIndexStore.js"
+import { layerKeyValueStore as layerEventJournalKeyValueStore } from "./EventJournalKeyValueStore.js"
+import {
+  ArtifactDelete,
+  ArtifactDeleteTag,
+  ArtifactEventGroup,
+  ArtifactEventSchema,
+  ArtifactEventTag
+} from "./StorageEventGroups.js"
 
 export type ArtifactListOptions = {
   readonly offset?: number
@@ -20,6 +34,36 @@ export type ArtifactListOptions = {
 }
 
 const storeName = "ArtifactStore"
+
+const mapError = (operation: string, cause: unknown) =>
+  toStorageError(storeName, operation, cause)
+
+const resolveJournalKeys = (options?: {
+  readonly journalKey?: string
+  readonly identityKey?: string
+  readonly prefix?: string
+}) => ({
+  journalKey:
+    options?.journalKey ??
+    (options?.prefix
+      ? `${options.prefix}/event-journal`
+      : defaultArtifactEventJournalKey),
+  identityKey:
+    options?.identityKey ??
+    (options?.prefix
+      ? `${options.prefix}/event-log-identity`
+      : defaultArtifactIdentityKey)
+})
+
+const resolveJournaledOptions = (options?: {
+  readonly journalKey?: string
+  readonly identityKey?: string
+  readonly prefix?: string
+}) => ({
+  ...(options?.prefix !== undefined ? { prefix: options.prefix } : {}),
+  ...(options?.journalKey !== undefined ? { journalKey: options.journalKey } : {}),
+  ...(options?.identityKey !== undefined ? { identityKey: options.identityKey } : {})
+})
 
 const ArtifactIndex = Schema.Struct({
   ids: Schema.Array(Schema.String),
@@ -159,6 +203,177 @@ const applyRetention = (
 
   return next
 }
+
+const layerArtifactJournalHandlers = (options?: {
+  readonly prefix?: string
+}) =>
+  EventLogModule.group(ArtifactEventGroup, (handlers) =>
+    handlers
+      .handle(ArtifactEventTag, ({ payload }) =>
+        Effect.gen(function*() {
+          const enabled = yield* resolveEnabled
+          if (!enabled) return
+          const kv = yield* KeyValueStore.KeyValueStore
+          const prefix = options?.prefix ?? defaultArtifactPrefix
+          const recordStore = kv.forSchema(ArtifactRecord)
+          const indexStore = kv.forSchema(ArtifactIndex)
+
+          const recordKey = (id: string) => `${prefix}/by-id/${id}`
+          const indexKey = (sessionId: string) => `${prefix}/by-session/${sessionId}`
+
+          const loadIndex = (sessionId: string) =>
+            indexStore.get(indexKey(sessionId)).pipe(
+              Effect.mapError((cause) => mapError("loadIndex", cause)),
+              Effect.map((maybe) =>
+                Option.getOrElse(maybe, () => ({
+                  ids: [],
+                  updatedAt: 0
+                } satisfies ArtifactIndex))
+              )
+            )
+
+          const saveIndex = (sessionId: string, index: ArtifactIndex) =>
+            indexStore.set(indexKey(sessionId), index).pipe(
+              Effect.mapError((cause) => mapError("saveIndex", cause))
+            )
+
+          const applyRetentionKv = (
+            sessionId: string,
+            ids: ReadonlyArray<string>,
+            now: number,
+            retention: ArtifactRetention | undefined
+          ) =>
+            Effect.gen(function*() {
+              if (!retention) return ids
+
+              let filteredIds = ids.slice()
+
+              if (retention.maxAgeMs !== undefined) {
+                const cutoff = now - retention.maxAgeMs
+                const records = yield* Effect.forEach(
+                  filteredIds,
+                  (id) =>
+                    recordStore.get(recordKey(id)).pipe(
+                      Effect.mapError((cause) => mapError("retention", cause))
+                    ),
+                  { discard: false }
+                )
+                filteredIds = filteredIds.filter((id, index) => {
+                  const recordOption = records[index]
+                  return recordOption
+                    ? Option.isSome(recordOption) && recordOption.value.createdAt >= cutoff
+                    : false
+                })
+              }
+
+              if (retention.maxArtifacts !== undefined) {
+                const maxArtifacts = retention.maxArtifacts
+                if (maxArtifacts <= 0) {
+                  filteredIds = []
+                } else if (filteredIds.length > maxArtifacts) {
+                  filteredIds = filteredIds.slice(filteredIds.length - maxArtifacts)
+                }
+              }
+
+              if (retention.maxArtifactBytes !== undefined) {
+                const maxBytes = retention.maxArtifactBytes
+                if (maxBytes <= 0) {
+                  filteredIds = []
+                } else {
+                  const records = yield* Effect.forEach(
+                    filteredIds,
+                    (id) =>
+                      recordStore.get(recordKey(id)).pipe(
+                        Effect.mapError((cause) => mapError("retention", cause))
+                      ),
+                    { discard: false }
+                  )
+                  let total = 0
+                  const kept: Array<string> = []
+                  for (let index = filteredIds.length - 1; index >= 0; index -= 1) {
+                    const id = filteredIds[index]
+                    if (!id) continue
+                    const recordOption = records[index]
+                    if (!recordOption || Option.isNone(recordOption)) continue
+                    const size = sizeOfRecord(recordOption.value)
+                    if (total + size > maxBytes) continue
+                    total += size
+                    kept.push(id)
+                  }
+                  kept.reverse()
+                  filteredIds = kept
+                }
+              }
+
+              return filteredIds
+            })
+
+          const record = payload
+          const now = yield* Clock.currentTimeMillis
+          const retention = yield* resolveRetention
+
+          yield* recordStore.set(recordKey(record.id), record).pipe(
+            Effect.mapError((cause) => mapError("put", cause))
+          )
+          const index = yield* loadIndex(record.sessionId)
+          const ids = updateIndex(index.ids, record.id)
+          const retained = yield* applyRetentionKv(record.sessionId, ids, now, retention)
+          const dropped = ids.filter((id) => !retained.includes(id))
+          if (dropped.length > 0) {
+            yield* Effect.forEach(
+              dropped,
+              (id) =>
+                recordStore.remove(recordKey(id)).pipe(
+                  Effect.mapError((cause) => mapError("retention", cause))
+                ),
+              { discard: true }
+            )
+          }
+          yield* saveIndex(record.sessionId, { ids: retained, updatedAt: now })
+          yield* touchSessionIndex(record.sessionId, now)
+        }).pipe(
+          Effect.mapError((cause) => mapError("journalHandler", cause))
+        )
+      )
+      .handle(ArtifactDeleteTag, ({ payload }) =>
+        Effect.gen(function*() {
+          const enabled = yield* resolveEnabled
+          if (!enabled) return
+          const kv = yield* KeyValueStore.KeyValueStore
+          const prefix = options?.prefix ?? defaultArtifactPrefix
+          const recordStore = kv.forSchema(ArtifactRecord)
+          const indexStore = kv.forSchema(ArtifactIndex)
+
+          const recordKey = (id: string) => `${prefix}/by-id/${id}`
+          const indexKey = (sessionId: string) => `${prefix}/by-session/${sessionId}`
+
+          yield* recordStore.remove(recordKey(payload.id)).pipe(
+            Effect.mapError((cause) => mapError("delete", cause))
+          )
+
+          const indexOption = yield* indexStore.get(indexKey(payload.sessionId)).pipe(
+            Effect.mapError((cause) => mapError("loadIndex", cause))
+          )
+          if (Option.isNone(indexOption)) return
+          const ids = indexOption.value.ids.filter((id) => id !== payload.id)
+          if (ids.length === 0) {
+            yield* indexStore.remove(indexKey(payload.sessionId)).pipe(
+              Effect.mapError((cause) => mapError("deleteIndex", cause))
+            )
+          } else {
+            yield* indexStore.set(indexKey(payload.sessionId), {
+              ids,
+              updatedAt: payload.deletedAt
+            }).pipe(
+              Effect.mapError((cause) => mapError("saveIndex", cause))
+            )
+          }
+          yield* touchSessionIndex(payload.sessionId, payload.deletedAt)
+        }).pipe(
+          Effect.mapError((cause) => mapError("journalHandler", cause))
+        )
+      )
+  )
 
 export class ArtifactStore extends Context.Tag("@effect/claude-agent-sdk/ArtifactStore")<
   ArtifactStore,
@@ -526,6 +741,266 @@ export class ArtifactStore extends Context.Tag("@effect/claude-agent-sdk/Artifac
       })
     )
 
+  static readonly layerJournaled = (options?: {
+    readonly prefix?: string
+    readonly journalKey?: string
+    readonly identityKey?: string
+  }) =>
+    Layer.effect(
+      ArtifactStore,
+      Effect.gen(function*() {
+        const kv = yield* KeyValueStore.KeyValueStore
+        const log = yield* EventLogModule.EventLog
+        const prefix = options?.prefix ?? defaultArtifactPrefix
+        const recordStore = kv.forSchema(ArtifactRecord)
+        const indexStore = kv.forSchema(ArtifactIndex)
+
+        const recordKey = (id: string) => `${prefix}/by-id/${id}`
+        const indexKey = (sessionId: string) => `${prefix}/by-session/${sessionId}`
+
+        const loadIndex = (sessionId: string) =>
+          indexStore.get(indexKey(sessionId)).pipe(
+            Effect.mapError((cause) => toStorageError(storeName, "loadIndex", cause)),
+            Effect.map((maybe) =>
+              Option.getOrElse(maybe, () => ({
+                ids: [],
+                updatedAt: 0
+              } satisfies ArtifactIndex))
+            )
+          )
+
+        const saveIndex = (sessionId: string, index: ArtifactIndex) =>
+          indexStore.set(indexKey(sessionId), index).pipe(
+            Effect.mapError((cause) => toStorageError(storeName, "saveIndex", cause))
+          )
+
+        const applyRetentionKv = (
+          sessionId: string,
+          ids: ReadonlyArray<string>,
+          now: number,
+          retention: ArtifactRetention | undefined
+        ) =>
+          Effect.gen(function*() {
+            if (!retention) return ids
+
+            let filteredIds = ids.slice()
+
+            if (retention.maxAgeMs !== undefined) {
+              const cutoff = now - retention.maxAgeMs
+              const records = yield* Effect.forEach(
+                filteredIds,
+                (id) =>
+                  recordStore.get(recordKey(id)).pipe(
+                    Effect.mapError((cause) => toStorageError(storeName, "retention", cause))
+                  ),
+                { discard: false }
+              )
+              filteredIds = filteredIds.filter((id, index) => {
+                const recordOption = records[index]
+                return recordOption
+                  ? Option.isSome(recordOption) && recordOption.value.createdAt >= cutoff
+                  : false
+              })
+            }
+
+            if (retention.maxArtifacts !== undefined) {
+              const maxArtifacts = retention.maxArtifacts
+              if (maxArtifacts <= 0) {
+                filteredIds = []
+              } else if (filteredIds.length > maxArtifacts) {
+                filteredIds = filteredIds.slice(filteredIds.length - maxArtifacts)
+              }
+            }
+
+            if (retention.maxArtifactBytes !== undefined) {
+              const maxBytes = retention.maxArtifactBytes
+              if (maxBytes <= 0) {
+                filteredIds = []
+              } else {
+                const records = yield* Effect.forEach(
+                  filteredIds,
+                  (id) =>
+                    recordStore.get(recordKey(id)).pipe(
+                      Effect.mapError((cause) => toStorageError(storeName, "retention", cause))
+                    ),
+                  { discard: false }
+                )
+                let total = 0
+                const kept: Array<string> = []
+                for (let index = filteredIds.length - 1; index >= 0; index -= 1) {
+                  const id = filteredIds[index]
+                  if (!id) continue
+                  const recordOption = records[index]
+                  if (!recordOption || Option.isNone(recordOption)) continue
+                  const size = sizeOfRecord(recordOption.value)
+                  if (total + size > maxBytes) continue
+                  total += size
+                  kept.push(id)
+                }
+                kept.reverse()
+                filteredIds = kept
+              }
+            }
+
+            return filteredIds
+          })
+
+        const put = Effect.fn("ArtifactStore.put")((record: ArtifactRecord) =>
+          Effect.gen(function*() {
+            const enabled = yield* resolveEnabled
+            if (!enabled) return
+            yield* log.write({
+              schema: ArtifactEventSchema,
+              event: ArtifactEventTag,
+              payload: record
+            }).pipe(
+              Effect.mapError((cause) => toStorageError(storeName, "put", cause))
+            )
+          })
+        )
+
+        const get = Effect.fn("ArtifactStore.get")((id: string) =>
+          recordStore.get(recordKey(id)).pipe(
+            Effect.mapError((cause) => toStorageError(storeName, "get", cause))
+          )
+        )
+
+        const list = Effect.fn("ArtifactStore.list")((sessionId: string, options?: ArtifactListOptions) =>
+          Effect.gen(function*() {
+            const config = yield* Effect.serviceOption(StorageConfig)
+            const defaultLimit = Option.getOrUndefined(
+              Option.map(config, (value) => value.settings.pagination.artifactPageSize)
+            )
+            const limit = resolveListLimit(options, defaultLimit)
+            const indexOption = yield* indexStore.get(indexKey(sessionId)).pipe(
+              Effect.mapError((cause) => toStorageError(storeName, "list", cause))
+            )
+            if (Option.isNone(indexOption)) return []
+            const offset = Math.max(0, options?.offset ?? 0)
+            const ids = indexOption.value.ids
+            const slice = limit === undefined ? ids.slice(offset) : ids.slice(offset, offset + limit)
+            const records = yield* Effect.forEach(
+              slice,
+              (id) => recordStore.get(recordKey(id)).pipe(
+                Effect.mapError((cause) => toStorageError(storeName, "list", cause))
+              ),
+              { discard: false }
+            )
+            return records.flatMap((record) => Option.isSome(record) ? [record.value] : [])
+          })
+        )
+
+        const deleteArtifact = Effect.fn("ArtifactStore.delete")((id: string) =>
+          Effect.gen(function*() {
+            const recordOption = yield* recordStore.get(recordKey(id)).pipe(
+              Effect.mapError((cause) => toStorageError(storeName, "delete", cause))
+            )
+            if (Option.isNone(recordOption)) return
+            const record = recordOption.value
+            const now = yield* Clock.currentTimeMillis
+            const payload: ArtifactDelete = {
+              id: record.id,
+              sessionId: record.sessionId,
+              deletedAt: now
+            }
+            yield* log.write({
+              schema: ArtifactEventSchema,
+              event: ArtifactDeleteTag,
+              payload
+            }).pipe(
+              Effect.mapError((cause) => toStorageError(storeName, "delete", cause))
+            )
+          })
+        )
+
+        const purgeSession = Effect.fn("ArtifactStore.purgeSession")((sessionId: string) =>
+          Effect.gen(function*() {
+            const indexOption = yield* indexStore.get(indexKey(sessionId)).pipe(
+              Effect.mapError((cause) => toStorageError(storeName, "purgeSession", cause))
+            )
+            if (Option.isNone(indexOption)) return
+            const ids = indexOption.value.ids
+            const now = yield* Clock.currentTimeMillis
+            yield* Effect.forEach(
+              ids,
+              (id) =>
+                log.write({
+                  schema: ArtifactEventSchema,
+                  event: ArtifactDeleteTag,
+                  payload: {
+                    id,
+                    sessionId,
+                    deletedAt: now
+                  }
+                }).pipe(
+                  Effect.mapError((cause) => toStorageError(storeName, "purgeSession", cause))
+                ),
+              { discard: true }
+            )
+          })
+        )
+
+        const cleanup = Effect.fn("ArtifactStore.cleanup")(function*() {
+          const enabled = yield* resolveEnabled
+          if (!enabled) return
+          const retention = yield* resolveRetention
+          if (!retention) return
+          const indexOption = yield* Effect.serviceOption(SessionIndexStore)
+          if (Option.isNone(indexOption)) return
+          const sessionIds = yield* indexOption.value.listIds()
+          if (sessionIds.length === 0) return
+          const now = yield* Clock.currentTimeMillis
+
+          yield* Effect.forEach(
+            sessionIds,
+            (sessionId) =>
+              Effect.gen(function*() {
+                const index = yield* loadIndex(sessionId)
+                const retained = yield* applyRetentionKv(sessionId, index.ids, now, retention)
+                const dropped = index.ids.filter((id) => !retained.includes(id))
+                if (dropped.length > 0) {
+                  yield* Effect.forEach(
+                    dropped,
+                    (id) =>
+                      recordStore.remove(recordKey(id)).pipe(
+                        Effect.mapError((cause) => toStorageError(storeName, "retention", cause))
+                      ),
+                    { discard: true }
+                  )
+                }
+                if (retained.length !== index.ids.length) {
+                  yield* saveIndex(sessionId, { ids: retained, updatedAt: now })
+                }
+              }),
+            { discard: true }
+          )
+        })
+
+        return ArtifactStore.of({
+          put,
+          get,
+          list,
+          delete: deleteArtifact,
+          purgeSession,
+          cleanup
+        })
+      })
+    ).pipe(
+      Layer.provide(
+        EventLogModule.layerEventLog.pipe(
+          Layer.provide(
+            layerEventJournalKeyValueStore(
+              { key: resolveJournalKeys(options).journalKey }
+            )
+          ),
+          Layer.provide(EventLogModule.layerIdentityKvs({
+            key: resolveJournalKeys(options).identityKey
+          })),
+          Layer.provide(layerArtifactJournalHandlers(options))
+        )
+      )
+    )
+
   static readonly layerFileSystem = (options?: {
     readonly directory?: string
     readonly prefix?: string
@@ -547,6 +1022,38 @@ export class ArtifactStore extends Context.Tag("@effect/claude-agent-sdk/Artifac
     ArtifactStore.layerKeyValueStore({
       prefix: options?.prefix ?? defaultArtifactPrefix
     }).pipe(
+      Layer.provide(
+        BunKeyValueStore.layerFileSystem(
+          options?.directory ?? defaultStorageDirectory
+        )
+      )
+    )
+
+  static readonly layerJournaledFileSystem = (options?: {
+    readonly directory?: string
+    readonly prefix?: string
+    readonly journalKey?: string
+    readonly identityKey?: string
+  }) =>
+    ArtifactStore.layerJournaled(
+      resolveJournaledOptions(options)
+    ).pipe(
+      Layer.provide(
+        KeyValueStore.layerFileSystem(
+          options?.directory ?? defaultStorageDirectory
+        )
+      )
+    )
+
+  static readonly layerJournaledFileSystemBun = (options?: {
+    readonly directory?: string
+    readonly prefix?: string
+    readonly journalKey?: string
+    readonly identityKey?: string
+  }) =>
+    ArtifactStore.layerJournaled(
+      resolveJournaledOptions(options)
+    ).pipe(
       Layer.provide(
         BunKeyValueStore.layerFileSystem(
           options?.directory ?? defaultStorageDirectory
