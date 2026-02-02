@@ -95,9 +95,10 @@ API (proposed):
 ```ts
 export class EventLogRemoteServer extends Context.Tag("@effect/claude-agent-sdk/EventLogRemoteServer")<
   EventLogRemoteServer,
-  { readonly address: HttpServer.Address }
+  { readonly address: HttpServer.Address; readonly url: string }
 >() {
   static readonly layerBunWebSocket: (options: ServerOptions) => Layer.Layer<EventLogRemoteServer>
+  static readonly layerBunWebSocketTest: (options: ServerOptions) => Layer.Layer<EventLogRemoteServer>
   static readonly layerSocket: (options: ServerOptions) => Layer.Layer<EventLogRemoteServer>
 }
 ```

@@ -383,11 +383,13 @@ const layerArtifactJournalHandlers = (options?: {
       )
   )
 
-const journaledEventLogLayer = (options?: {
+const journaledEventLogLayer: (options?: {
   readonly prefix?: string
   readonly journalKey?: string
   readonly identityKey?: string
-}) => {
+}) => Layer.Layer<EventLogModule.EventLog, unknown, KeyValueStore.KeyValueStore> = (
+  options
+) => {
   const keys = resolveJournalKeys(options)
   return EventLogModule.layerEventLog.pipe(
     Layer.provide(
@@ -1020,26 +1022,45 @@ export class ArtifactStore extends Context.Tag("@effect/claude-agent-sdk/Artifac
       Layer.provide(journaledEventLogLayer(options))
     )
 
-  static readonly layerJournaledWithEventLog = (options?: {
+  static readonly layerJournaledWithEventLog: (options?: {
     readonly prefix?: string
     readonly journalKey?: string
     readonly identityKey?: string
-  }) =>
-    journaledEventLogLayer(options).pipe(
-      Layer.provideMerge(
-        Layer.effect(ArtifactStore, makeJournaledStore(options))
+  }) => Layer.Layer<
+    ArtifactStore | EventLogModule.EventLog,
+    unknown,
+    KeyValueStore.KeyValueStore
+  > = (options) =>
+    {
+      const eventLogLayer = journaledEventLogLayer(options)
+      const storeLayer = Layer.effect(ArtifactStore, makeJournaledStore(options)).pipe(
+        Layer.provide(eventLogLayer)
       )
-    )
+      return Layer.merge(eventLogLayer, storeLayer)
+    }
 
-  static readonly layerJournaledWithSyncWebSocket = (
+  static readonly layerJournaledWithSyncWebSocket: (
     url: string,
     options?: ArtifactSyncOptions
-  ) =>
-    ArtifactStore.layerJournaledWithEventLog(resolveJournaledOptions(options)).pipe(
-      Layer.provideMerge(
-        SyncService.layerWebSocket(url, options?.disablePing ? { disablePing: true } : undefined)
-      )
+  ) => Layer.Layer<ArtifactStore, unknown, KeyValueStore.KeyValueStore> = (
+    url,
+    options
+  ) => {
+    const baseLayer = ArtifactStore.layerJournaledWithEventLog(resolveJournaledOptions(options))
+    const syncLayer = SyncService.layerWebSocket(
+      url,
+      options?.disablePing ? { disablePing: true } : undefined
+    ).pipe(
+      Layer.provide(baseLayer)
     )
+    const combined = Layer.merge(baseLayer, syncLayer)
+    return Layer.project(
+      combined,
+      ArtifactStore,
+      ArtifactStore,
+      (store) => store
+    )
+  }
 
   static readonly layerFileSystem = (options?: {
     readonly directory?: string

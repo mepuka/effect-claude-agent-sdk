@@ -331,11 +331,13 @@ const layerChatJournalHandlers = (options?: {
     )
   )
 
-const journaledEventLogLayer = (options?: {
+const journaledEventLogLayer: (options?: {
   readonly prefix?: string
   readonly journalKey?: string
   readonly identityKey?: string
-}) => {
+}) => Layer.Layer<EventLogModule.EventLog, unknown, KeyValueStore.KeyValueStore> = (
+  options
+) => {
   const keys = resolveJournalKeys(options)
   return EventLogModule.layerEventLog.pipe(
     Layer.provide(
@@ -1044,26 +1046,45 @@ export class ChatHistoryStore extends Context.Tag("@effect/claude-agent-sdk/Chat
       Layer.provide(journaledEventLogLayer(options))
     )
 
-  static readonly layerJournaledWithEventLog = (options?: {
+  static readonly layerJournaledWithEventLog: (options?: {
     readonly prefix?: string
     readonly journalKey?: string
     readonly identityKey?: string
-  }) =>
-    journaledEventLogLayer(options).pipe(
-      Layer.provideMerge(
-        Layer.effect(ChatHistoryStore, makeJournaledStore(options))
+  }) => Layer.Layer<
+    ChatHistoryStore | EventLogModule.EventLog,
+    unknown,
+    KeyValueStore.KeyValueStore
+  > = (options) =>
+    {
+      const eventLogLayer = journaledEventLogLayer(options)
+      const storeLayer = Layer.effect(ChatHistoryStore, makeJournaledStore(options)).pipe(
+        Layer.provide(eventLogLayer)
       )
-    )
+      return Layer.merge(eventLogLayer, storeLayer)
+    }
 
-  static readonly layerJournaledWithSyncWebSocket = (
+  static readonly layerJournaledWithSyncWebSocket: (
     url: string,
     options?: ChatHistorySyncOptions
-  ) =>
-    ChatHistoryStore.layerJournaledWithEventLog(resolveJournaledOptions(options)).pipe(
-      Layer.provideMerge(
-        SyncService.layerWebSocket(url, options?.disablePing ? { disablePing: true } : undefined)
-      )
+  ) => Layer.Layer<ChatHistoryStore, unknown, KeyValueStore.KeyValueStore> = (
+    url,
+    options
+  ) => {
+    const baseLayer = ChatHistoryStore.layerJournaledWithEventLog(resolveJournaledOptions(options))
+    const syncLayer = SyncService.layerWebSocket(
+      url,
+      options?.disablePing ? { disablePing: true } : undefined
+    ).pipe(
+      Layer.provide(baseLayer)
     )
+    const combined = Layer.merge(baseLayer, syncLayer)
+    return Layer.project(
+      combined,
+      ChatHistoryStore,
+      ChatHistoryStore,
+      (store) => store
+    )
+  }
 
   static readonly layerFileSystem = (options?: {
     readonly directory?: string
