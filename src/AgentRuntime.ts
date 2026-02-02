@@ -28,6 +28,7 @@ import { AuditEventStore } from "./Storage/AuditEventStore.js"
 import { ChatHistoryStore } from "./Storage/ChatHistoryStore.js"
 import { StorageConfig } from "./Storage/StorageConfig.js"
 import { SessionIndexStore } from "./Storage/SessionIndexStore.js"
+import { layerAuditEventStore } from "./Sync/SyncAuditEventStore.js"
 
 type ChatHistoryStoreService = Context.Tag.Service<typeof ChatHistoryStore>
 
@@ -282,6 +283,7 @@ export class AgentRuntime extends Context.Tag("@effect/claude-agent-sdk/AgentRun
     const auditLayer = options?.layers?.auditLog ?? AuditEventStore.layerMemory
     const sessionIndexLayer = options?.layers?.sessionIndex ?? SessionIndexStore.layerMemory
     const storageConfigLayer = options?.layers?.storageConfig ?? StorageConfig.layer
+    const syncAuditLayer = layerAuditEventStore.pipe(Layer.provide(auditLayer))
 
     const layer = Layer.effect(
       AgentRuntime,
@@ -393,7 +395,8 @@ export class AgentRuntime extends Context.Tag("@effect/claude-agent-sdk/AgentRun
       Layer.provide(artifactLayer),
       Layer.provide(auditLayer),
       Layer.provide(sessionIndexLayer),
-      Layer.provide(storageConfigLayer)
+      Layer.provide(storageConfigLayer),
+      Layer.provide(syncAuditLayer)
     )
   }
 

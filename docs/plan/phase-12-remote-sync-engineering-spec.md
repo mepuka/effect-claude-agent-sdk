@@ -352,35 +352,35 @@ Primary keys:
 
 ## Acceptance Criteria (by Issue)
 ### #12 Implement EventLogRemote sync orchestration
-- [ ] SyncService connects and manages EventLogRemote connections.
-- [ ] Bidirectional sync works; reconnect resumes from last sequence.
+- [x] SyncService connects and manages EventLogRemote connections.
+- [x] Bidirectional sync works; reconnect resumes from last sequence.
 - [ ] Sync interval configurable via StorageConfig.
-- [ ] Integration test: two replicas converge.
+- [x] Integration test: two replicas converge.
 
 ### #13 Add EventLogRemote server for shared state
-- [ ] Server accepts WebSocket connections (Bun.serve).
-- [ ] Persists entries to EventJournal backend.
-- [ ] Broadcasts changes to connected replicas.
+- [x] Server accepts WebSocket connections (Bun.serve).
+- [x] Persists entries to EventJournal backend.
+- [x] Broadcasts changes to connected replicas.
 - [ ] Optional encryption supported.
 - [ ] Example: two SDK instances sync via server.
 
 ### #14 Implement compaction strategies for EventJournal
-- [ ] byAge/byCount (at minimum) implemented and composable.
-- [ ] Compaction integrated with EventLog.registerCompaction.
-- [ ] Compacted entries are not re-synced.
-- [ ] Unit tests for each strategy.
+- [x] byAge/byCount (at minimum) implemented and composable.
+- [x] Compaction integrated with EventLog.registerCompaction.
+- [x] Compacted entries are not re-synced.
+- [x] Unit tests for each strategy.
 
 ### #15 Add conflict resolution policies for multi-replica sync
-- [ ] lastWriteWins/firstWriteWins policies implemented.
-- [ ] Policy is injectable via Layer.
-- [ ] Conflicts emitted to audit log.
-- [ ] Unit tests for conflicts.
+- [x] lastWriteWins/firstWriteWins policies implemented.
+- [x] Policy is injectable via Layer.
+- [x] Conflicts emitted to audit log.
+- [x] Unit tests for conflicts.
 
 ### #16 Extend ChatHistoryStore and ArtifactStore with remote sync
-- [ ] Journaled layers for chat history and artifacts.
-- [ ] Selective sync config works.
-- [ ] Migration utility or documented path.
-- [ ] No breaking changes for existing KV layers.
+- [x] Journaled layers for chat history and artifacts.
+- [x] Selective sync config works.
+- [ ] Migration utility or documented path (skipped for greenfield).
+- [x] No breaking changes for existing KV layers.
 
 ## Example Usage (Sketch)
 ```ts
