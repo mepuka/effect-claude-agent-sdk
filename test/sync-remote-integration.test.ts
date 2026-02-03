@@ -8,6 +8,14 @@ import { runEffectLive } from "./effect-test.js"
 import { Storage, Sync } from "../src/index.js"
 import { makeUserMessage } from "../src/internal/messages.js"
 
+const debugEnabled =
+  Bun.env.SYNC_TEST_DEBUG === "1" || Bun.env.SYNC_TEST_DEBUG === "true"
+const debug = (...args: Array<unknown>) => {
+  if (debugEnabled) console.log("[sync-test]", ...args)
+}
+const debugEffect = (...args: Array<unknown>) =>
+  debugEnabled ? Effect.sync(() => debug(...args)) : Effect.void
+
 const canListen = async () => {
   const maxAttempts = 5
   const minPort = 20000
@@ -44,21 +52,34 @@ const waitFor = <A, E>(
   Effect.gen(function*() {
     const retries = options?.retries ?? 40
     const interval = options?.interval ?? Duration.millis(25)
+    let lastValue: A | undefined = undefined
     for (let attempt = 0; attempt < retries; attempt += 1) {
       const value = yield* effect
+      lastValue = value
       if (predicate(value)) return value
+      yield* debugEffect(`waitFor ${label} attempt ${attempt + 1}`, value)
       yield* Effect.sleep(interval)
     }
+    yield* debugEffect(`waitFor ${label} timed out`, lastValue)
     return yield* Effect.die(new Error(`Timed out waiting for ${label}.`))
   })
 
-const makeReplicaLayer = (url: string) => {
-  const baseLayer = Storage.ChatHistoryStore.layerJournaledWithEventLog()
+const sharedIdentityKey = "sync-test-identity"
+
+const makeReplicaLayer = (
+  url: string,
+  kv: KeyValueStore.KeyValueStore,
+  options: { readonly prefix: string }
+) => {
+  const baseLayer = Storage.ChatHistoryStore.layerJournaledWithEventLog({
+    prefix: options.prefix,
+    identityKey: sharedIdentityKey
+  })
   const syncLayer = Sync.SyncService.layerWebSocket(url, { disablePing: true }).pipe(
     Layer.provide(baseLayer)
   )
   return Layer.merge(baseLayer, syncLayer).pipe(
-    Layer.provide(Layer.fresh(KeyValueStore.layerMemory))
+    Layer.provide(Layer.succeed(KeyValueStore.KeyValueStore, kv))
   )
 }
 
@@ -67,8 +88,18 @@ test("Remote sync converges and resumes after reconnect", { timeout: 15000 }, as
   const program = Effect.scoped(
     Effect.gen(function*() {
       const server = yield* Sync.EventLogRemoteServer
-      const replicaAContext = yield* Layer.build(makeReplicaLayer(server.url))
-      const replicaBContext = yield* Layer.build(makeReplicaLayer(server.url))
+      const kvContext = yield* Layer.build(KeyValueStore.layerMemory)
+      const kv = Context.get(kvContext, KeyValueStore.KeyValueStore)
+      yield* debugEffect("server", {
+        url: server.url,
+        address: server.address
+      })
+      const replicaAContext = yield* Layer.build(
+        makeReplicaLayer(server.url, kv, { prefix: "replica-a" })
+      )
+      const replicaBContext = yield* Layer.build(
+        makeReplicaLayer(server.url, kv, { prefix: "replica-b" })
+      )
 
       const storeA = Context.get(replicaAContext, Storage.ChatHistoryStore)
       const storeB = Context.get(replicaBContext, Storage.ChatHistoryStore)
@@ -80,12 +111,14 @@ test("Remote sync converges and resumes after reconnect", { timeout: 15000 }, as
         syncA.status(),
         (statuses) => statuses.some((status) => status.key === server.url && status.connected)
       )
+      yield* debugEffect("status after connect A", yield* syncA.status())
 
       yield* waitFor(
         "replica B to connect",
         syncB.status(),
         (statuses) => statuses.some((status) => status.key === server.url && status.connected)
       )
+      yield* debugEffect("status after connect B", yield* syncB.status())
 
       const firstMessage = makeUserMessage("hello")
       yield* storeA.appendMessage("session-1", firstMessage)
@@ -95,8 +128,10 @@ test("Remote sync converges and resumes after reconnect", { timeout: 15000 }, as
         storeB.list("session-1"),
         (list) => list.length === 1
       )
+      yield* debugEffect("replica B list after first", listB)
 
       yield* syncA.disconnectWebSocket(server.url)
+      yield* debugEffect("status after disconnect A", yield* syncA.status())
 
       const secondMessage = makeUserMessage("hello again")
       yield* storeB.appendMessage("session-1", secondMessage)
@@ -108,6 +143,7 @@ test("Remote sync converges and resumes after reconnect", { timeout: 15000 }, as
         storeA.list("session-1"),
         (list) => list.length === 2
       )
+      yield* debugEffect("replica A list after second", listA)
 
       yield* syncA.disconnectWebSocket(server.url)
       yield* syncB.disconnectWebSocket(server.url)
