@@ -109,6 +109,10 @@ test("Remote sync converges and resumes after reconnect", { timeout: 15000 }, as
         (list) => list.length === 2
       )
 
+      yield* syncA.disconnectWebSocket(server.url)
+      yield* syncB.disconnectWebSocket(server.url)
+      yield* Effect.sleep(Duration.millis(25))
+
       return { listA, listB }
     }).pipe(
       Effect.provide(Sync.layerBunWebSocketTest())
