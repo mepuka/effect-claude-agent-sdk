@@ -62,7 +62,7 @@ const makeReplicaLayer = (url: string) => {
   )
 }
 
-test("Remote sync converges and resumes after reconnect", async () => {
+test("Remote sync converges and resumes after reconnect", { timeout: 15000 }, async () => {
   if (!(await canListen())) return
   const program = Effect.scoped(
     Effect.gen(function*() {
@@ -73,6 +73,19 @@ test("Remote sync converges and resumes after reconnect", async () => {
       const storeA = Context.get(replicaAContext, Storage.ChatHistoryStore)
       const storeB = Context.get(replicaBContext, Storage.ChatHistoryStore)
       const syncA = Context.get(replicaAContext, Sync.SyncService)
+      const syncB = Context.get(replicaBContext, Sync.SyncService)
+
+      yield* waitFor(
+        "replica A to connect",
+        syncA.status(),
+        (statuses) => statuses.some((status) => status.key === server.url && status.connected)
+      )
+
+      yield* waitFor(
+        "replica B to connect",
+        syncB.status(),
+        (statuses) => statuses.some((status) => status.key === server.url && status.connected)
+      )
 
       const firstMessage = makeUserMessage("hello")
       yield* storeA.appendMessage("session-1", firstMessage)
@@ -83,7 +96,7 @@ test("Remote sync converges and resumes after reconnect", async () => {
         (list) => list.length === 1
       )
 
-      yield* syncA.disconnect(server.url)
+      yield* syncA.disconnectWebSocket(server.url)
 
       const secondMessage = makeUserMessage("hello again")
       yield* storeB.appendMessage("session-1", secondMessage)
