@@ -27,10 +27,18 @@ export const toWebSocketUrl = (
     throw new Error("EventLogRemoteServer requires a TCP address to build a WebSocket URL.")
   }
   const hostname = options?.hostname ?? address.hostname
-  const resolvedHostname = hostname === "0.0.0.0" ? "127.0.0.1" : hostname
+  const resolvedHostname = hostname === "0.0.0.0"
+    ? "127.0.0.1"
+    : hostname === "::"
+    ? "::1"
+    : hostname
+  const formattedHostname =
+    resolvedHostname.includes(":") && !resolvedHostname.startsWith("[")
+      ? `[${resolvedHostname}]`
+      : resolvedHostname
   const path = options?.path ?? "/event-log"
   const scheme = options?.scheme ?? "ws"
-  return `${scheme}://${resolvedHostname}:${address.port}${path}`
+  return `${scheme}://${formattedHostname}:${address.port}${path}`
 }
 
 export class EventLogRemoteServer extends Context.Tag("@effect/claude-agent-sdk/EventLogRemoteServer")<
