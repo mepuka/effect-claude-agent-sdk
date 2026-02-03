@@ -8,7 +8,7 @@ bindings = [{ name = "SYNC_DO", class_name = "SyncDurableObject" }]
 
 [[migrations]]
 tag = "v1"
-new_classes = ["SyncDurableObject"]
+new_sqlite_classes = ["SyncDurableObject"]
 
 # Optional D1 binding
 # [[d1_databases]]

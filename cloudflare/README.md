@@ -8,6 +8,7 @@ EventLogRemote protocol for syncing SDK replicas. The Durable Object uses Effect
 1. Copy `wrangler.toml` and adjust `name`, `account_id`, and `compatibility_date`.
 2. Ensure Durable Object SQLite is enabled:
    - `compatibility_flags = ["durable_object_sqlite"]`
+   - `migrations = [{ tag = "v1", new_sqlite_classes = ["SyncDurableObject"] }]`
 3. Bind the Durable Object:
    - `SYNC_DO` → `SyncDurableObject`
 
@@ -31,4 +32,3 @@ clients should set `disablePing: true` unless the DO is extended to handle Ping/
 - `src/do/SyncDurableObject.ts` — Durable Object class
 - `src/storage/StorageDo.ts` — DO SQLite storage layer
 - `src/storage/StorageD1.ts` — D1 storage layer
-
