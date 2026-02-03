@@ -192,3 +192,16 @@ export const layersFileSystemBunJournaledWithSyncWebSocket = (
     sessionIndex: baseLayers.sessionIndex
   }
 }
+
+export const layerFileSystemBunJournaledWithSyncWebSocket = (
+  url: string,
+  options?: StorageSyncLayerOptions
+) => {
+  const layers = layersFileSystemBunJournaledWithSyncWebSocket(url, options)
+  return Layer.mergeAll(
+    layers.chatHistory,
+    layers.artifacts,
+    layers.auditLog,
+    layers.sessionIndex
+  )
+}

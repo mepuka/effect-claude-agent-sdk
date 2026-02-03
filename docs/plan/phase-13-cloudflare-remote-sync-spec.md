@@ -11,7 +11,7 @@ This phase builds on Phase 12’s EventLog-backed sync system, but makes it depl
 ## Goals
 - Cloudflare-native remote sync server package (Worker + Durable Object) that implements the EventLogRemote protocol.
 - Durable storage options suitable for production (DO storage and/or D1).
-- Simple DX for connecting SDK clients to Cloudflare (`Sync.withRemoteSync(...)` or equivalent).
+- Simple DX for connecting SDK clients to Cloudflare (`AgentRuntime.layerWithRemoteSync(...)` or equivalent).
 - Observability browser viewer (read-only) with clear sync status indicators.
 - Documented semantics and constraints, especially around WebSocket and streaming differences.
 
@@ -142,14 +142,15 @@ Constraints to document:
 Add a DX‑first API for Cloudflare:
 
 ```ts
-Sync.withRemoteSync("wss://sync.example.workers.dev", {
+AgentRuntime.layerWithRemoteSync({
+  url: "wss://sync.example.workers.dev",
   provider: "cloudflare",
-  tenant: "session-123",
   disablePing: true,
-  syncInterval: "5 seconds",
-  conflictPolicy: "lastWriteWins",
-  compaction: { maxEntries: 1000 }
-})
+  syncInterval: "5 seconds"
+}).pipe(
+  Layer.provide(ConflictPolicy.layerLastWriteWins),
+  Layer.provide(Compaction.layerByCount(1000))
+)
 ```
 
 Key behavior:
@@ -265,7 +266,7 @@ remote: {
 - Migration and retention strategy
 
 ### Phase 13.3 – DX helpers
-- `Sync.withRemoteSync` one‑liner
+- `AgentRuntime.layerWithRemoteSync` one‑liner
 - Config parsing + defaults
 
 ### Phase 13.4 – Observability viewer

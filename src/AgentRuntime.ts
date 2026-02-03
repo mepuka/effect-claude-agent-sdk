@@ -27,6 +27,10 @@ import { ArtifactStore } from "./Storage/ArtifactStore.js"
 import { AuditEventStore } from "./Storage/AuditEventStore.js"
 import { ChatHistoryStore } from "./Storage/ChatHistoryStore.js"
 import { StorageConfig } from "./Storage/StorageConfig.js"
+import {
+  layersFileSystemBunJournaledWithSyncWebSocket,
+  type StorageSyncLayerOptions
+} from "./Storage/StorageLayers.js"
 import { SessionIndexStore } from "./Storage/SessionIndexStore.js"
 import { layerAuditEventStore } from "./Sync/SyncAuditEventStore.js"
 
@@ -97,6 +101,14 @@ export type PersistenceLayers = {
 }
 
 export type PersistenceOptions = {
+  readonly layers?: PersistenceLayers
+  readonly history?: RecorderOptions
+  readonly audit?: AuditLoggingOptions
+}
+
+export type RemoteSyncOptions = StorageSyncLayerOptions & {
+  readonly url: string
+  readonly provider?: "bun" | "cloudflare"
   readonly layers?: PersistenceLayers
   readonly history?: RecorderOptions
   readonly audit?: AuditLoggingOptions
@@ -398,6 +410,37 @@ export class AgentRuntime extends Context.Tag("@effect/claude-agent-sdk/AgentRun
       Layer.provide(storageConfigLayer),
       Layer.provide(syncAuditLayer)
     )
+  }
+
+  /**
+   * Convenience layer that wires journaled storage with remote sync over WebSocket.
+   */
+  static readonly layerWithRemoteSync = (options: RemoteSyncOptions) => {
+    const provider = options.provider ?? "cloudflare"
+    const disablePing = options.disablePing ?? provider === "cloudflare"
+    const syncLayers = layersFileSystemBunJournaledWithSyncWebSocket(
+      options.url,
+      {
+        directory: options.directory,
+        syncInterval: options.syncInterval,
+        disablePing,
+        syncChatHistory: options.syncChatHistory,
+        syncArtifacts: options.syncArtifacts
+      }
+    )
+    const layers: PersistenceLayers = {
+      runtime: options.layers?.runtime ?? AgentRuntime.layerDefault,
+      chatHistory: options.layers?.chatHistory ?? syncLayers.chatHistory,
+      artifacts: options.layers?.artifacts ?? syncLayers.artifacts,
+      auditLog: options.layers?.auditLog ?? syncLayers.auditLog,
+      sessionIndex: options.layers?.sessionIndex ?? syncLayers.sessionIndex,
+      storageConfig: options.layers?.storageConfig ?? StorageConfig.layer
+    }
+    return AgentRuntime.layerWithPersistence({
+      layers,
+      history: options.history,
+      audit: options.audit
+    })
   }
 
 }
