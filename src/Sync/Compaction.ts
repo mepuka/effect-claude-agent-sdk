@@ -30,8 +30,8 @@ export const compactEntries = (
 ) =>
   strategy(toRemoteEntries(entries)).pipe(
     Effect.map((brackets) => {
-      const first = brackets[0]
-      return first ? first[0] : []
+      const last = brackets[brackets.length - 1]
+      return last ? last[0] : []
     })
   )
 

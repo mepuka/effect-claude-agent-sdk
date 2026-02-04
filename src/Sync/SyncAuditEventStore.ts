@@ -30,7 +30,9 @@ export const layerAuditEventStore = Layer.effect(
       return store.write({
         event: "sync_conflict",
         payload
-      }).pipe(Effect.catchAll(() => Effect.void))
+      }).pipe(
+        Effect.catchAll((cause) => Effect.logError(cause).pipe(Effect.asVoid))
+      )
     }
 
     const compaction = (input: SyncCompactionAudit) =>
@@ -49,7 +51,9 @@ export const layerAuditEventStore = Layer.effect(
         return yield* store.write({
           event: "sync_compaction",
           payload
-        }).pipe(Effect.catchAll(() => Effect.void))
+        }).pipe(
+          Effect.catchAll((cause) => Effect.logError(cause).pipe(Effect.asVoid))
+        )
       })
 
     return SyncAudit.of({ conflict, compaction })

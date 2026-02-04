@@ -1,4 +1,6 @@
 import { BunFileSystem, BunKeyValueStore, BunPath } from "@effect/platform-bun"
+import type { FileSystem } from "@effect/platform/FileSystem"
+import type { Path } from "@effect/platform/Path"
 import type * as Duration from "effect/Duration"
 import * as Layer from "effect/Layer"
 import { ArtifactStore } from "./ArtifactStore.js"
@@ -61,6 +63,33 @@ const resolveLayers = (
   }
 }
 
+const mergeLayers = <E, R>(layers: StorageLayers<E, R>) =>
+  Layer.mergeAll(
+    layers.chatHistory,
+    layers.artifacts,
+    layers.auditLog,
+    layers.sessionIndex
+  )
+
+type BunDependencies = FileSystem | Path
+
+const provideBunLayers = <E, R>(
+  layers: StorageLayers<E, R>
+): StorageLayers<E, Exclude<R, BunDependencies>> => ({
+  chatHistory: layers.chatHistory.pipe(
+    Layer.provide([bunFileSystemLayer, bunPathLayer])
+  ),
+  artifacts: layers.artifacts.pipe(
+    Layer.provide([bunFileSystemLayer, bunPathLayer])
+  ),
+  auditLog: layers.auditLog.pipe(
+    Layer.provide([bunFileSystemLayer, bunPathLayer])
+  ),
+  sessionIndex: layers.sessionIndex.pipe(
+    Layer.provide([bunFileSystemLayer, bunPathLayer])
+  )
+})
+
 export const layersFileSystem = (options?: StorageLayerOptions) =>
   resolveLayers(options, "filesystem", "standard")
 
@@ -74,80 +103,34 @@ export const layersFileSystemBun = (
   options?: StorageLayerOptions
 ): StorageLayers<unknown, never> => {
   const layers = resolveLayers(options, "bun", "standard")
-  return {
-    chatHistory: layers.chatHistory.pipe(
-      Layer.provide([bunFileSystemLayer, bunPathLayer])
-    ),
-    artifacts: layers.artifacts.pipe(
-      Layer.provide([bunFileSystemLayer, bunPathLayer])
-    ),
-    auditLog: layers.auditLog.pipe(
-      Layer.provide([bunFileSystemLayer, bunPathLayer])
-    ),
-    sessionIndex: layers.sessionIndex.pipe(
-      Layer.provide([bunFileSystemLayer, bunPathLayer])
-    )
-  }
+  return provideBunLayers(layers)
 }
 
 export const layersFileSystemBunJournaled = (
   options?: StorageLayerOptions
 ): StorageLayers<unknown, never> => {
   const layers = resolveLayers(options, "bun", "journaled")
-  return {
-    chatHistory: layers.chatHistory.pipe(
-      Layer.provide([bunFileSystemLayer, bunPathLayer])
-    ),
-    artifacts: layers.artifacts.pipe(
-      Layer.provide([bunFileSystemLayer, bunPathLayer])
-    ),
-    auditLog: layers.auditLog.pipe(
-      Layer.provide([bunFileSystemLayer, bunPathLayer])
-    ),
-    sessionIndex: layers.sessionIndex.pipe(
-      Layer.provide([bunFileSystemLayer, bunPathLayer])
-    )
-  }
+  return provideBunLayers(layers)
 }
 
 export const layerFileSystem = (options?: StorageLayerOptions) => {
   const layers = resolveLayers(options, "filesystem", "standard")
-  return Layer.mergeAll(
-    layers.chatHistory,
-    layers.artifacts,
-    layers.auditLog,
-    layers.sessionIndex
-  )
+  return mergeLayers(layers)
 }
 
 export const layerFileSystemBun = (options?: StorageLayerOptions) => {
   const layers = layersFileSystemBun(options)
-  return Layer.mergeAll(
-    layers.chatHistory,
-    layers.artifacts,
-    layers.auditLog,
-    layers.sessionIndex
-  )
+  return mergeLayers(layers)
 }
 
 export const layerFileSystemJournaled = (options?: StorageLayerOptions) => {
   const layers = resolveLayers(options, "filesystem", "journaled")
-  return Layer.mergeAll(
-    layers.chatHistory,
-    layers.artifacts,
-    layers.auditLog,
-    layers.sessionIndex
-  )
+  return mergeLayers(layers)
 }
 
 export const layerFileSystemBunJournaled = (options?: StorageLayerOptions) => {
   const layers = layersFileSystemBunJournaled(options)
-  return Layer.mergeAll(
-    layers.chatHistory,
-    layers.artifacts,
-    layers.auditLog,
-    layers.sessionIndex
-  )
+  return mergeLayers(layers)
 }
 
 export const layersFileSystemBunJournaledWithSyncWebSocket = (
@@ -207,10 +190,5 @@ export const layerFileSystemBunJournaledWithSyncWebSocket = (
   options?: StorageSyncLayerOptions
 ) => {
   const layers = layersFileSystemBunJournaledWithSyncWebSocket(url, options)
-  return Layer.mergeAll(
-    layers.chatHistory,
-    layers.artifacts,
-    layers.auditLog,
-    layers.sessionIndex
-  )
+  return mergeLayers(layers)
 }

@@ -191,6 +191,7 @@ export const make = (options?: { readonly key?: string }) =>
                 })
             })
 
+          let didInsert = false
           for (const [compacted, remoteEntries] of brackets) {
             if (remoteEntries.length > compacted.length) {
               const events = Array.from(
@@ -238,16 +239,19 @@ export const make = (options?: { readonly key?: string }) =>
                 conflictIndex.set(key, [entry])
               }
             }
+            if (accepted.length > 0) {
+              didInsert = true
+            }
             for (const remoteEntry of remoteEntries) {
               if (remoteEntry.remoteSequence > remote.sequence) {
                 remote.sequence = remoteEntry.remoteSequence
               }
             }
-            if (accepted.length > 0) {
-              journal.sort((a, b) => a.createdAtMillis - b.createdAtMillis)
-            }
           }
 
+          if (didInsert) {
+            journal.sort((a, b) => a.createdAtMillis - b.createdAtMillis)
+          }
           yield* persistEntries(kv, key, journal)
         })),
       withRemoteUncommited: (remoteId, f) =>

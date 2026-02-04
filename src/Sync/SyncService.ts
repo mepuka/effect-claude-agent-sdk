@@ -4,14 +4,13 @@ import * as EventLogRemote from "@effect/experimental/EventLogRemote"
 import * as Socket from "@effect/platform/Socket"
 import { BunSocket } from "@effect/platform-bun"
 import * as Cause from "effect/Cause"
-import * as Chunk from "effect/Chunk"
 import * as Clock from "effect/Clock"
 import * as Context from "effect/Context"
 import * as Duration from "effect/Duration"
 import * as Effect from "effect/Effect"
 import * as FiberMap from "effect/FiberMap"
 import * as Layer from "effect/Layer"
-import type * as Mailbox from "effect/Mailbox"
+import * as Mailbox from "effect/Mailbox"
 import * as Option from "effect/Option"
 import * as Ref from "effect/Ref"
 import * as Schedule from "effect/Schedule"
@@ -308,22 +307,12 @@ function make() {
       yield* runTracked(key, effect, { onlyIfMissing: !hasFiber })
     })
 
-    const wrapMailbox = <A, E>(mailbox: Mailbox.ReadonlyMailbox<A, E>, key: string) => {
-      const markIfEntries = (entries: Chunk.Chunk<A>) =>
-        Chunk.isEmpty(entries) ? Effect.void : markSynced(key)
-      return {
-        ...mailbox,
-        clear: mailbox.clear.pipe(Effect.tap(markIfEntries)),
-        takeAll: mailbox.takeAll.pipe(
-          Effect.tap(([entries]) => markIfEntries(entries))
-        ),
-        takeN: (n: number) =>
-          mailbox.takeN(n).pipe(
-            Effect.tap(([entries]) => markIfEntries(entries))
-          ),
-        take: mailbox.take.pipe(Effect.tap(() => markSynced(key)))
-      }
-    }
+    const wrapMailbox = <A, E>(mailbox: Mailbox.ReadonlyMailbox<A, E>, key: string) =>
+      Mailbox.fromStream(
+        Mailbox.toStream(mailbox).pipe(
+          Stream.tap(() => markSynced(key))
+        )
+      )
 
     const wrapRemote = (remote: EventLogRemote.EventLogRemote, key: string): EventLogRemote.EventLogRemote => ({
       id: remote.id,
@@ -331,7 +320,7 @@ function make() {
         remote.write(identity, entries).pipe(Effect.tap(() => markSynced(key))),
       changes: (identity, startSequence) =>
         remote.changes(identity, startSequence).pipe(
-          Effect.map((mailbox) => wrapMailbox(mailbox, key))
+          Effect.flatMap((mailbox) => wrapMailbox(mailbox, key))
         )
     })
 
@@ -382,9 +371,7 @@ function make() {
       )
     )
 
-    const disconnectRemoteId = Effect.fn("SyncService.disconnectRemoteId")((remoteId: string) =>
-      disconnect(remoteId)
-    )
+    const disconnectRemoteId = disconnect
 
     const disconnectWebSocket = Effect.fn("SyncService.disconnectWebSocket")((url: string) =>
       disconnect(url)
