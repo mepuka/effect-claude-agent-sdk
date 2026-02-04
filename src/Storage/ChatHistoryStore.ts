@@ -14,6 +14,7 @@ import type { SDKMessage } from "../Schema/Message.js"
 import { ChatEvent, ChatEventSource } from "../Schema/Storage.js"
 import { Compaction, compactEntries } from "../Sync/Compaction.js"
 import type { CompactionStrategy } from "../Sync/Compaction.js"
+import { ConflictPolicy } from "../Sync/ConflictPolicy.js"
 import { SyncService } from "../Sync/SyncService.js"
 import {
   defaultChatEventJournalKey,
@@ -39,10 +40,14 @@ export type ChatHistoryListOptions = {
   readonly reverse?: boolean
 }
 
-export type ChatHistorySyncOptions = {
+export type ChatHistoryJournaledOptions = {
   readonly prefix?: string
   readonly journalKey?: string
   readonly identityKey?: string
+  readonly conflictPolicy?: Layer.Layer<ConflictPolicy>
+}
+
+export type ChatHistorySyncOptions = ChatHistoryJournaledOptions & {
   readonly disablePing?: boolean
   readonly syncInterval?: Duration.DurationInput
 }
@@ -172,14 +177,11 @@ const resolveJournalKeys = (options?: {
       : defaultChatIdentityKey)
 })
 
-const resolveJournaledOptions = (options?: {
-  readonly journalKey?: string
-  readonly identityKey?: string
-  readonly prefix?: string
-}) => ({
+const resolveJournaledOptions = (options?: ChatHistoryJournaledOptions) => ({
   ...(options?.prefix !== undefined ? { prefix: options.prefix } : {}),
   ...(options?.journalKey !== undefined ? { journalKey: options.journalKey } : {}),
-  ...(options?.identityKey !== undefined ? { identityKey: options.identityKey } : {})
+  ...(options?.identityKey !== undefined ? { identityKey: options.identityKey } : {}),
+  ...(options?.conflictPolicy !== undefined ? { conflictPolicy: options.conflictPolicy } : {})
 })
 
 const touchSessionIndex = (sessionId: string, timestamp: number) =>
@@ -359,14 +361,12 @@ const layerChatJournalCompaction = Layer.scopedDiscard(
   })
 )
 
-const journaledEventLogLayer: (options?: {
-  readonly prefix?: string
-  readonly journalKey?: string
-  readonly identityKey?: string
-}) => Layer.Layer<EventLogModule.EventLog, unknown, KeyValueStore.KeyValueStore> = (
-  options
-) => {
+const journaledEventLogLayer: (
+  options?: ChatHistoryJournaledOptions
+) => Layer.Layer<EventLogModule.EventLog, unknown, KeyValueStore.KeyValueStore> = (options) => {
   const keys = resolveJournalKeys(options)
+  const conflictPolicyLayer =
+    options?.conflictPolicy ?? ConflictPolicy.layerLastWriteWins
   const baseLayer = EventLogModule.layerEventLog.pipe(
     Layer.provide(
       layerEventJournalKeyValueStore(
@@ -376,7 +376,8 @@ const journaledEventLogLayer: (options?: {
     Layer.provide(EventLogModule.layerIdentityKvs({
       key: keys.identityKey
     })),
-    Layer.provide(layerChatJournalHandlers(options))
+    Layer.provide(layerChatJournalHandlers(options)),
+    Layer.provide(conflictPolicyLayer)
   )
   const compactionLayer = layerChatJournalCompaction.pipe(Layer.provide(baseLayer))
   return Layer.merge(baseLayer, compactionLayer)
@@ -1067,20 +1068,14 @@ export class ChatHistoryStore extends Context.Tag("@effect/claude-agent-sdk/Chat
       })
     )
 
-  static readonly layerJournaled = (options?: {
-    readonly prefix?: string
-    readonly journalKey?: string
-    readonly identityKey?: string
-  }) =>
+  static readonly layerJournaled = (options?: ChatHistoryJournaledOptions) =>
     Layer.effect(ChatHistoryStore, makeJournaledStore(options)).pipe(
       Layer.provide(journaledEventLogLayer(options))
     )
 
-  static readonly layerJournaledWithEventLog: (options?: {
-    readonly prefix?: string
-    readonly journalKey?: string
-    readonly identityKey?: string
-  }) => Layer.Layer<
+  static readonly layerJournaledWithEventLog: (
+    options?: ChatHistoryJournaledOptions
+  ) => Layer.Layer<
     ChatHistoryStore | EventLogModule.EventLog,
     unknown,
     KeyValueStore.KeyValueStore
@@ -1096,10 +1091,7 @@ export class ChatHistoryStore extends Context.Tag("@effect/claude-agent-sdk/Chat
   static readonly layerJournaledWithSyncWebSocket: (
     url: string,
     options?: ChatHistorySyncOptions
-  ) => Layer.Layer<ChatHistoryStore, unknown, KeyValueStore.KeyValueStore> = (
-    url,
-    options
-  ) => {
+  ) => Layer.Layer<ChatHistoryStore, unknown, KeyValueStore.KeyValueStore> = (url, options) => {
     const baseLayer = ChatHistoryStore.layerJournaledWithEventLog(resolveJournaledOptions(options))
     const syncOptions =
       options?.disablePing !== undefined || options?.syncInterval !== undefined

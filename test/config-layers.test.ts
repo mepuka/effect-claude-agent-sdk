@@ -44,6 +44,7 @@ test("AgentSdkConfig reads sandbox settings from config provider", async () => {
   const layer = AgentSdkConfig.layer.pipe(
     Layer.provide(
       configLayer({
+        ANTHROPIC_API_KEY: "test-key",
         SANDBOX_ENABLED: "true",
         SANDBOX_AUTO_ALLOW_BASH_IF_SANDBOXED: "true",
         SANDBOX_ALLOW_UNSANDBOXED_COMMANDS: "false",
@@ -102,6 +103,7 @@ test("AgentSdkConfig rejects invalid setting sources", async () => {
   const layer = AgentSdkConfig.layer.pipe(
     Layer.provide(
       configLayer({
+        ANTHROPIC_API_KEY: "test-key",
         SETTING_SOURCES: "project,banana"
       })
     )
@@ -113,6 +115,23 @@ test("AgentSdkConfig rejects invalid setting sources", async () => {
   expect(Either.isLeft(result)).toBe(true)
   if (Either.isLeft(result)) {
     expect(result.left._tag).toBe("ConfigError")
+  }
+})
+
+test("AgentSdkConfig fails fast when credentials are missing", async () => {
+  const layer = AgentSdkConfig.layer.pipe(
+    Layer.provide(configLayer({}))
+  )
+
+  const program = AgentSdkConfig.pipe(Effect.provide(layer))
+
+  const result = await runEffect(Effect.either(program))
+  expect(Either.isLeft(result)).toBe(true)
+  if (Either.isLeft(result)) {
+    expect(result.left._tag).toBe("ConfigError")
+    expect(result.left.message).toContain("Missing API credentials")
+    expect(result.left.message).toContain("ANTHROPIC_API_KEY")
+    expect(result.left.message).toContain("CLAUDE_CODE_SESSION_ACCESS_TOKEN")
   }
 })
 

@@ -108,6 +108,7 @@ test("SessionManager.resume merges defaults and overrides", async () => {
       SessionConfig.layer.pipe(
         Layer.provide(
           configLayer({
+            ANTHROPIC_API_KEY: "test-key",
             EXECUTABLE: "node",
             DISALLOWED_TOOLS: "Bash"
           })
@@ -151,6 +152,7 @@ test("SessionManager.prompt merges defaults and overrides", async () => {
       SessionConfig.layer.pipe(
         Layer.provide(
           configLayer({
+            ANTHROPIC_API_KEY: "test-key",
             EXECUTABLE: "node",
             PERMISSION_MODE: "plan"
           })
@@ -184,7 +186,11 @@ test("SessionManager.create fails when model is missing", async () => {
   const layer = SessionManager.layer.pipe(
     Layer.provide(
       SessionConfig.layer.pipe(
-        Layer.provide(configLayer({}))
+        Layer.provide(
+          configLayer({
+            ANTHROPIC_API_KEY: "test-key"
+          })
+        )
       )
     )
   )

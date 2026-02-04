@@ -421,11 +421,17 @@ export class AgentRuntime extends Context.Tag("@effect/claude-agent-sdk/AgentRun
     const syncLayers = layersFileSystemBunJournaledWithSyncWebSocket(
       options.url,
       {
-        directory: options.directory,
-        syncInterval: options.syncInterval,
         disablePing,
-        syncChatHistory: options.syncChatHistory,
-        syncArtifacts: options.syncArtifacts
+        ...(options.directory !== undefined ? { directory: options.directory } : {}),
+        ...(options.syncInterval !== undefined
+          ? { syncInterval: options.syncInterval }
+          : {}),
+        ...(options.syncChatHistory !== undefined
+          ? { syncChatHistory: options.syncChatHistory }
+          : {}),
+        ...(options.syncArtifacts !== undefined
+          ? { syncArtifacts: options.syncArtifacts }
+          : {})
       }
     )
     const layers: PersistenceLayers = {
@@ -438,8 +444,8 @@ export class AgentRuntime extends Context.Tag("@effect/claude-agent-sdk/AgentRun
     }
     return AgentRuntime.layerWithPersistence({
       layers,
-      history: options.history,
-      audit: options.audit
+      ...(options.history !== undefined ? { history: options.history } : {}),
+      ...(options.audit !== undefined ? { audit: options.audit } : {})
     })
   }
 

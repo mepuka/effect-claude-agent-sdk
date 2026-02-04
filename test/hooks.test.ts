@@ -84,3 +84,51 @@ test("Hook.callback aborts when signal is already aborted", async () => {
     expect(String(error)).toContain("FiberFailure")
   }
 })
+
+test("Hooks.onPreToolUse builds a hook map with typed handler", async () => {
+  const hookEffect = Hooks.onPreToolUse(() =>
+    Effect.succeed({
+      continue: true
+    })
+  )
+  const hooks = await runEffect(hookEffect)
+  const matcher = hooks.PreToolUse?.[0]
+  expect(matcher).toBeDefined()
+  const callback = matcher?.hooks[0]
+  if (!callback) throw new Error("Expected hook callback")
+  const result = await callback(
+    {
+      hook_event_name: "PreToolUse",
+      session_id: "session-1",
+      transcript_path: "/tmp",
+      cwd: "/tmp",
+      tool_name: "tool",
+      tool_input: { value: 1 },
+      tool_use_id: "tool-1"
+    },
+    "tool-1",
+    { signal: new AbortController().signal }
+  )
+  if ("async" in result) {
+    throw new Error("Expected sync hook output")
+  }
+  expect(result.continue).toBe(true)
+})
+
+test("Hooks.tap builds hook map for multiple events", async () => {
+  const hookEffect = Hooks.tap(["SessionStart", "SessionEnd"], () => Effect.void)
+  const hooks = await runEffect(hookEffect)
+  expect(hooks.SessionStart?.length).toBe(1)
+  expect(hooks.SessionEnd?.length).toBe(1)
+})
+
+test("Hooks.builder assembles multiple hooks", async () => {
+  const hooks = await runEffect(
+    Hooks.builder()
+      .onSessionStart(() => Effect.succeed({ continue: true }))
+      .onSessionEnd(() => Effect.succeed({ continue: true }))
+      .build()
+  )
+  expect(hooks.SessionStart?.length).toBe(1)
+  expect(hooks.SessionEnd?.length).toBe(1)
+})

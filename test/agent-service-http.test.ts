@@ -79,12 +79,12 @@ test("agent HTTP API serves query and stats", async () => {
       })
     )
     expect(queryResponse.status).toBe(200)
-    const queryBody = await queryResponse.json()
+    const queryBody = await queryResponse.json() as { result: string }
     expect(queryBody.result).toBe("ok")
 
     const statsResponse = await handler(new Request("http://localhost/stats"))
     expect(statsResponse.status).toBe(200)
-    const statsBody = await statsResponse.json()
+    const statsBody = await statsResponse.json() as { active: number }
     expect(statsBody.active).toBe(1)
 
     const interruptResponse = await handler(
@@ -94,17 +94,17 @@ test("agent HTTP API serves query and stats", async () => {
 
     const modelsResponse = await handler(new Request("http://localhost/models"))
     expect(modelsResponse.status).toBe(200)
-    const modelsBody = await modelsResponse.json()
+    const modelsBody = await modelsResponse.json() as Array<{ value?: string }>
     expect(modelsBody[0]?.value).toBe("claude-3-5")
 
     const commandsResponse = await handler(new Request("http://localhost/commands"))
     expect(commandsResponse.status).toBe(200)
-    const commandsBody = await commandsResponse.json()
+    const commandsBody = await commandsResponse.json() as Array<{ name?: string }>
     expect(commandsBody[0]?.name).toBe("help")
 
     const accountResponse = await handler(new Request("http://localhost/account"))
     expect(accountResponse.status).toBe(200)
-    const accountBody = await accountResponse.json()
+    const accountBody = await accountResponse.json() as { email?: string }
     expect(accountBody.email).toBe("dev@example.com")
   } finally {
     await dispose()
@@ -158,17 +158,17 @@ test("agent HTTP API metadata uses queryRaw", async () => {
   try {
     const modelsResponse = await handler(new Request("http://localhost/models"))
     expect(modelsResponse.status).toBe(200)
-    const modelsBody = await modelsResponse.json()
+    const modelsBody = await modelsResponse.json() as Array<{ value?: string }>
     expect(modelsBody[0]?.value).toBe("claude-3-5")
 
     const commandsResponse = await handler(new Request("http://localhost/commands"))
     expect(commandsResponse.status).toBe(200)
-    const commandsBody = await commandsResponse.json()
+    const commandsBody = await commandsResponse.json() as Array<{ name?: string }>
     expect(commandsBody[0]?.name).toBe("help")
 
     const accountResponse = await handler(new Request("http://localhost/account"))
     expect(accountResponse.status).toBe(200)
-    const accountBody = await accountResponse.json()
+    const accountBody = await accountResponse.json() as { email?: string }
     expect(accountBody.email).toBe("dev@example.com")
   } finally {
     await dispose()

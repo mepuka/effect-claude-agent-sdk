@@ -33,5 +33,6 @@
         "name": "@effect/language-service"
       }
     ]
-  }
+  },
+  "exclude": ["cloudflare"]
 }

@@ -24,6 +24,21 @@ bun add effect-claude-agent-sdk effect @effect/platform @effect/platform-bun
 
 ## Quick Start
 
+Zero-config entry points (no Effect knowledge required):
+
+```ts
+import { run, streamText } from "effect-claude-agent-sdk"
+
+const result = await run("What is 2 + 2?")
+console.log(result.result)
+
+for await (const chunk of streamText("Tell me a short story")) {
+  process.stdout.write(chunk)
+}
+```
+
+Effect-native usage:
+
 ```ts
 import * as Console from "effect/Console"
 import * as Effect from "effect/Effect"

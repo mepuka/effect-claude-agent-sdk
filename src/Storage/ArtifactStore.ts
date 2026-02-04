@@ -13,6 +13,7 @@ import { ArtifactRecord } from "../Schema/Storage.js"
 import { SyncService } from "../Sync/SyncService.js"
 import { Compaction, compactEntries } from "../Sync/Compaction.js"
 import type { CompactionStrategy } from "../Sync/Compaction.js"
+import { ConflictPolicy } from "../Sync/ConflictPolicy.js"
 import {
   defaultArtifactEventJournalKey,
   defaultArtifactIdentityKey,
@@ -36,10 +37,14 @@ export type ArtifactListOptions = {
   readonly limit?: number
 }
 
-export type ArtifactSyncOptions = {
+export type ArtifactJournaledOptions = {
   readonly prefix?: string
   readonly journalKey?: string
   readonly identityKey?: string
+  readonly conflictPolicy?: Layer.Layer<ConflictPolicy>
+}
+
+export type ArtifactSyncOptions = ArtifactJournaledOptions & {
   readonly disablePing?: boolean
   readonly syncInterval?: Duration.DurationInput
 }
@@ -66,14 +71,11 @@ const resolveJournalKeys = (options?: {
       : defaultArtifactIdentityKey)
 })
 
-const resolveJournaledOptions = (options?: {
-  readonly journalKey?: string
-  readonly identityKey?: string
-  readonly prefix?: string
-}) => ({
+const resolveJournaledOptions = (options?: ArtifactJournaledOptions) => ({
   ...(options?.prefix !== undefined ? { prefix: options.prefix } : {}),
   ...(options?.journalKey !== undefined ? { journalKey: options.journalKey } : {}),
-  ...(options?.identityKey !== undefined ? { identityKey: options.identityKey } : {})
+  ...(options?.identityKey !== undefined ? { identityKey: options.identityKey } : {}),
+  ...(options?.conflictPolicy !== undefined ? { conflictPolicy: options.conflictPolicy } : {})
 })
 
 const ArtifactIndex = Schema.Struct({
@@ -414,14 +416,12 @@ const layerArtifactJournalCompaction = Layer.scopedDiscard(
   })
 )
 
-const journaledEventLogLayer: (options?: {
-  readonly prefix?: string
-  readonly journalKey?: string
-  readonly identityKey?: string
-}) => Layer.Layer<EventLogModule.EventLog, unknown, KeyValueStore.KeyValueStore> = (
-  options
-) => {
+const journaledEventLogLayer: (
+  options?: ArtifactJournaledOptions
+) => Layer.Layer<EventLogModule.EventLog, unknown, KeyValueStore.KeyValueStore> = (options) => {
   const keys = resolveJournalKeys(options)
+  const conflictPolicyLayer =
+    options?.conflictPolicy ?? ConflictPolicy.layerLastWriteWins
   const baseLayer = EventLogModule.layerEventLog.pipe(
     Layer.provide(
       layerEventJournalKeyValueStore(
@@ -431,7 +431,8 @@ const journaledEventLogLayer: (options?: {
     Layer.provide(EventLogModule.layerIdentityKvs({
       key: keys.identityKey
     })),
-    Layer.provide(layerArtifactJournalHandlers(options))
+    Layer.provide(layerArtifactJournalHandlers(options)),
+    Layer.provide(conflictPolicyLayer)
   )
   const compactionLayer = layerArtifactJournalCompaction.pipe(Layer.provide(baseLayer))
   return Layer.merge(baseLayer, compactionLayer)
@@ -1046,20 +1047,14 @@ export class ArtifactStore extends Context.Tag("@effect/claude-agent-sdk/Artifac
       })
     )
 
-  static readonly layerJournaled = (options?: {
-    readonly prefix?: string
-    readonly journalKey?: string
-    readonly identityKey?: string
-  }) =>
+  static readonly layerJournaled = (options?: ArtifactJournaledOptions) =>
     Layer.effect(ArtifactStore, makeJournaledStore(options)).pipe(
       Layer.provide(journaledEventLogLayer(options))
     )
 
-  static readonly layerJournaledWithEventLog: (options?: {
-    readonly prefix?: string
-    readonly journalKey?: string
-    readonly identityKey?: string
-  }) => Layer.Layer<
+  static readonly layerJournaledWithEventLog: (
+    options?: ArtifactJournaledOptions
+  ) => Layer.Layer<
     ArtifactStore | EventLogModule.EventLog,
     unknown,
     KeyValueStore.KeyValueStore
@@ -1075,10 +1070,7 @@ export class ArtifactStore extends Context.Tag("@effect/claude-agent-sdk/Artifac
   static readonly layerJournaledWithSyncWebSocket: (
     url: string,
     options?: ArtifactSyncOptions
-  ) => Layer.Layer<ArtifactStore, unknown, KeyValueStore.KeyValueStore> = (
-    url,
-    options
-  ) => {
+  ) => Layer.Layer<ArtifactStore, unknown, KeyValueStore.KeyValueStore> = (url, options) => {
     const baseLayer = ArtifactStore.layerJournaledWithEventLog(resolveJournaledOptions(options))
     const syncOptions =
       options?.disablePing !== undefined || options?.syncInterval !== undefined

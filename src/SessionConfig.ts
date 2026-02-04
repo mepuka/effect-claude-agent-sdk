@@ -6,6 +6,7 @@ import * as Option from "effect/Option"
 import * as Redacted from "effect/Redacted"
 import * as Schema from "effect/Schema"
 import { layerConfigFromEnv } from "./internal/config.js"
+import { missingCredentialsError } from "./internal/credentials.js"
 import type { SDKSessionOptions } from "./Schema/Session.js"
 import { SessionPermissionMode } from "./Schema/Session.js"
 
@@ -92,9 +93,7 @@ export class SessionConfig extends Context.Tag("@effect/claude-agent-sdk/Session
           : undefined
 
       if (!Option.isSome(resolvedApiKey) && !Option.isSome(sessionAccessToken)) {
-        yield* Effect.logError(
-          "Missing credentials: set ANTHROPIC_API_KEY (or API_KEY) or CLAUDE_CODE_SESSION_ACCESS_TOKEN, or sign in via Claude Code settings."
-        )
+        return yield* missingCredentialsError()
       }
 
       const defaults: SessionDefaults = {

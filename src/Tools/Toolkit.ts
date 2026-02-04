@@ -41,6 +41,10 @@ export interface Toolkit<Tools extends Record<string, Tool.Any>> {
   >
 }
 
+export interface ToolkitWithHandlers<Tools extends Record<string, Tool.Any>> extends Toolkit<Tools> {
+  readonly handlers: HandlersFrom<Tools>
+}
+
 export interface Any {
   readonly tools: Record<string, Tool.Any>
 }
@@ -51,6 +55,10 @@ export type ToolsByName<Tools> = Tools extends Record<string, Tool.Any> ?
   { readonly [Name in keyof Tools]: Tools[Name] }
   : Tools extends ReadonlyArray<Tool.Any> ? { readonly [Tool in Tools[number] as Tool["name"]]: Tool }
   : never
+
+export type ToolsFromDefinitions<Defs extends Record<string, Tool.Definition>> = SimplifyRecord<{
+  readonly [Name in keyof Defs]: Tool.ToolFromDefinition<Name & string, Defs[Name]>
+}>
 
 export type HandlersFrom<Tools extends Record<string, Tool.Any>> = {
   readonly [Name in keyof Tools as Tool.RequiresHandler<Tools[Name]> extends true ? Name : never]: (
@@ -234,6 +242,22 @@ export type MergeRecords<U> = {
 export type MergedTools<Toolkits extends ReadonlyArray<Any>> = SimplifyRecord<
   MergeRecords<Tools<Toolkits[number]>>
 >
+
+/**
+ * Build a toolkit from tool definitions that already include handlers.
+ */
+export const fromHandlers = <const Defs extends Record<string, Tool.Definition>>(
+  definitions: Defs
+): ToolkitWithHandlers<ToolsFromDefinitions<Defs>> => {
+  const tools = {} as ToolsFromDefinitions<Defs>
+  const handlers: Record<string, (params: any) => Effect.Effect<any, any, any>> = {}
+  for (const name in definitions) {
+    const tool = Tool.define(name as string, definitions[name] as any)
+    tools[name] = tool as any
+    handlers[name] = tool.handler as any
+  }
+  return Object.assign(makeProto(tools), { handlers: handlers as HandlersFrom<ToolsFromDefinitions<Defs>> }) as any
+}
 
 /**
  * Merge multiple toolkits into a single toolkit.

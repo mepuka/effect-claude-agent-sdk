@@ -1,14 +1,23 @@
 import { expect, test } from "bun:test"
 import * as EventJournal from "@effect/experimental/EventJournal"
+import { KeyValueStore } from "@effect/platform"
 import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
 import { runEffect } from "./effect-test.js"
-import { Sync } from "../src/index.js"
+import { Storage, Sync } from "../src/index.js"
 
 const makeEntry = (msecs: number, label: string) =>
   new EventJournal.Entry({
     id: EventJournal.makeEntryId({ msecs }),
     event: `event-${label}`,
+    primaryKey: "pk",
+    payload: new TextEncoder().encode(label)
+  })
+
+const makeConflictEntry = (msecs: number, label: string) =>
+  new EventJournal.Entry({
+    id: EventJournal.makeEntryId({ msecs }),
+    event: "event-conflict",
     primaryKey: "pk",
     payload: new TextEncoder().encode(label)
   })
@@ -87,4 +96,62 @@ test("ConflictPolicy.merge returns merged entry", async () => {
   if (result._tag === "merge") {
     expect(result.entry.idString).toBe(conflict.idString)
   }
+})
+
+test("EventJournalKeyValueStore applies ConflictPolicy during remote writes", async () => {
+  let conflictCount = 0
+  const auditLayer = Layer.succeed(
+    Sync.SyncAudit,
+    Sync.SyncAudit.of({
+      conflict: () =>
+        Effect.sync(() => {
+          conflictCount += 1
+        }),
+      compaction: () => Effect.void
+    })
+  )
+
+  const journalLayer = Storage.layerKeyValueStore().pipe(
+    Layer.provide(KeyValueStore.layerMemory)
+  )
+  const layer = Layer.mergeAll(
+    journalLayer,
+    Sync.ConflictPolicy.layerReject("reject"),
+    auditLayer
+  )
+
+  const program = Effect.gen(function*() {
+    const journal = yield* EventJournal.EventJournal
+    const remoteId = EventJournal.makeRemoteId()
+    const first = makeConflictEntry(1000, "first")
+    const second = makeConflictEntry(2000, "second")
+
+    yield* journal.writeFromRemote({
+      remoteId,
+      entries: [
+        new EventJournal.RemoteEntry({
+          remoteSequence: 1,
+          entry: first
+        })
+      ],
+      effect: () => Effect.void
+    })
+
+    yield* journal.writeFromRemote({
+      remoteId,
+      entries: [
+        new EventJournal.RemoteEntry({
+          remoteSequence: 2,
+          entry: second
+        })
+      ],
+      effect: () => Effect.void
+    })
+
+    return yield* journal.entries
+  }).pipe(Effect.provide(layer))
+
+  const entries = await runEffect(program)
+  expect(entries).toHaveLength(1)
+  expect(conflictCount).toBe(1)
 })

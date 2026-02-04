@@ -10,6 +10,7 @@ import type { HookEvent } from "../Schema/Hooks.js"
 import { AuditEventSchema, layerAuditHandlers } from "../experimental/EventLog.js"
 import { Compaction, compactEntries } from "../Sync/Compaction.js"
 import type { CompactionStrategy } from "../Sync/Compaction.js"
+import { ConflictPolicy } from "../Sync/ConflictPolicy.js"
 import {
   defaultAuditEventJournalKey,
   defaultAuditIdentityKey,
@@ -178,10 +179,13 @@ export class AuditEventStore extends Context.Tag("@effect/claude-agent-sdk/Audit
   static readonly layerKeyValueStore = (options?: {
     readonly journalKey?: string
     readonly identityKey?: string
+    readonly conflictPolicy?: Layer.Layer<ConflictPolicy>
   }) =>
     Layer.effect(AuditEventStore, makeStore).pipe(
       Layer.provide(
         (() => {
+          const conflictPolicyLayer =
+            options?.conflictPolicy ?? ConflictPolicy.layerLastWriteWins
           const baseLayer = EventLogModule.layerEventLog.pipe(
             Layer.provide(
               layerEventJournalKeyValueStore(
@@ -191,7 +195,8 @@ export class AuditEventStore extends Context.Tag("@effect/claude-agent-sdk/Audit
             Layer.provide(EventLogModule.layerIdentityKvs({
               key: options?.identityKey ?? defaultAuditIdentityKey
             })),
-            Layer.provide(layerAuditHandlers)
+            Layer.provide(layerAuditHandlers),
+            Layer.provide(conflictPolicyLayer)
           )
           const compactionLayer = layerAuditJournalCompaction.pipe(Layer.provide(baseLayer))
           return Layer.merge(baseLayer, compactionLayer)
@@ -204,8 +209,14 @@ export class AuditEventStore extends Context.Tag("@effect/claude-agent-sdk/Audit
     readonly journalKey?: string
     readonly identityKey?: string
     readonly prefix?: string
+    readonly conflictPolicy?: Layer.Layer<ConflictPolicy>
   }) =>
-    AuditEventStore.layerKeyValueStore(resolveAuditKeys(options)).pipe(
+    AuditEventStore.layerKeyValueStore({
+      ...resolveAuditKeys(options),
+      ...(options?.conflictPolicy !== undefined
+        ? { conflictPolicy: options.conflictPolicy }
+        : {})
+    }).pipe(
       Layer.provide(
         KeyValueStore.layerFileSystem(
           options?.directory ?? defaultStorageDirectory
@@ -218,8 +229,14 @@ export class AuditEventStore extends Context.Tag("@effect/claude-agent-sdk/Audit
     readonly journalKey?: string
     readonly identityKey?: string
     readonly prefix?: string
+    readonly conflictPolicy?: Layer.Layer<ConflictPolicy>
   }) =>
-    AuditEventStore.layerKeyValueStore(resolveAuditKeys(options)).pipe(
+    AuditEventStore.layerKeyValueStore({
+      ...resolveAuditKeys(options),
+      ...(options?.conflictPolicy !== undefined
+        ? { conflictPolicy: options.conflictPolicy }
+        : {})
+    }).pipe(
       Layer.provide(
         BunKeyValueStore.layerFileSystem(
           options?.directory ?? defaultStorageDirectory

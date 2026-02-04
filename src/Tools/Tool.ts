@@ -120,12 +120,20 @@ export type Success<T> = T extends Tool<infer _Name, infer _Config, infer _Requi
   Schema.Schema.Type<_Config["success"]> :
   never
 
+export type SuccessSchema<T> = T extends Tool<infer _Name, infer _Config, infer _Requirements> ?
+  _Config["success"] :
+  never
+
 export type SuccessEncoded<T> = T extends Tool<infer _Name, infer _Config, infer _Requirements> ?
   Schema.Schema.Encoded<_Config["success"]> :
   never
 
 export type Failure<T> = T extends Tool<infer _Name, infer _Config, infer _Requirements> ?
   Schema.Schema.Type<_Config["failure"]> :
+  never
+
+export type FailureSchema<T> = T extends Tool<infer _Name, infer _Config, infer _Requirements> ?
+  _Config["failure"] :
   never
 
 export type FailureEncoded<T> = T extends Tool<infer _Name, infer _Config, infer _Requirements> ?
@@ -165,6 +173,104 @@ export type HandlersFor<Tools extends Record<string, Any>> = {
     Requirements<Tools[Name]>
   >
 }
+
+export type ToolWithHandler<
+  Name extends string,
+  Config extends {
+    readonly parameters: AnyStructSchema
+    readonly success: Schema.Schema.Any
+    readonly failure: Schema.Schema.All
+    readonly failureMode: FailureMode
+  },
+  Requirements = never
+> = Tool<Name, Config, Requirements> & {
+  readonly handler: HandlerFor<Tool<Name, Config, Requirements>>
+}
+
+export type DefinitionFields<
+  Parameters extends Schema.Struct.Fields = {},
+  Success extends Schema.Schema.Any = typeof Schema.Void,
+  Failure extends Schema.Schema.All = typeof Schema.Never,
+  Mode extends FailureMode | undefined = undefined,
+  R = never
+> = {
+  readonly description?: string | undefined
+  readonly parameters?: Parameters | undefined
+  readonly success?: Success | undefined
+  readonly failure?: Failure | undefined
+  readonly failureMode?: Mode
+  readonly handler: (
+    params: Schema.Schema.Type<Schema.Struct<Parameters>>
+  ) => Effect.Effect<Schema.Schema.Type<Success>, Schema.Schema.Type<Failure>, R>
+}
+
+export type DefinitionSchema<
+  Parameters extends AnyStructSchema,
+  Success extends Schema.Schema.Any = typeof Schema.Void,
+  Failure extends Schema.Schema.All = typeof Schema.Never,
+  Mode extends FailureMode | undefined = undefined,
+  R = never
+> = {
+  readonly description?: string | undefined
+  readonly parameters: Parameters
+  readonly success?: Success | undefined
+  readonly failure?: Failure | undefined
+  readonly failureMode?: Mode
+  readonly handler: (
+    params: Schema.Schema.Type<Parameters>
+  ) => Effect.Effect<Schema.Schema.Type<Success>, Schema.Schema.Type<Failure>, R>
+}
+
+export type Definition = {
+  readonly description?: string | undefined
+  readonly parameters?: Schema.Struct.Fields | AnyStructSchema | undefined
+  readonly success?: Schema.Schema.Any | undefined
+  readonly failure?: Schema.Schema.All | undefined
+  readonly failureMode?: FailureMode | undefined
+  readonly handler: (params: any) => Effect.Effect<any, any, any>
+}
+
+type DefinitionParametersSchema<D> = D extends { parameters: infer P }
+  ? P extends Schema.Schema.Any
+    ? P
+    : P extends Schema.Struct.Fields
+      ? Schema.Struct<P>
+      : typeof constEmptyStruct
+  : typeof constEmptyStruct
+
+type DefinitionSuccessSchema<D> = D extends { success: infer S }
+  ? S extends Schema.Schema.Any
+    ? S
+    : typeof Schema.Void
+  : typeof Schema.Void
+
+type DefinitionFailureSchema<D> = D extends { failure: infer F }
+  ? F extends Schema.Schema.All
+    ? F
+    : typeof Schema.Never
+  : typeof Schema.Never
+
+type DefinitionFailureMode<D> = D extends { failureMode: infer M }
+  ? M extends FailureMode ? M : "error"
+  : "error"
+
+type DefinitionRequirements<D> = D extends {
+  handler: (...args: any[]) => Effect.Effect<any, any, infer R>
+} ? R : never
+
+export type ToolFromDefinition<
+  Name extends string,
+  Def
+> = ToolWithHandler<
+  Name,
+  {
+    readonly parameters: DefinitionParametersSchema<Def>
+    readonly success: DefinitionSuccessSchema<Def>
+    readonly failure: DefinitionFailureSchema<Def>
+    readonly failureMode: DefinitionFailureMode<Def>
+  },
+  DefinitionRequirements<Def>
+>
 
 const Proto = {
   addDependency(this: Any) {
@@ -291,6 +397,109 @@ export const fromSchema = <
     failureMode: options.failureMode ?? "error",
     annotations: Context.empty()
   }) as any
+
+const attachHandler = <T extends Any>(
+  tool: T,
+  handler: HandlerFor<T>
+) => Object.assign(tool, { handler }) as unknown as ToolWithHandler<
+  Name<T>,
+  {
+    readonly parameters: ParametersSchema<T>
+    readonly success: SuccessSchema<T>
+    readonly failure: FailureSchema<T>
+    readonly failureMode: FailureModeOf<T>
+  },
+  Requirements<T>
+>
+
+/**
+ * Define a tool alongside its handler in a single expression.
+ */
+export const define: {
+  <
+    const Name extends string,
+    Parameters extends Schema.Struct.Fields = {},
+    Success extends Schema.Schema.Any = typeof Schema.Void,
+    Failure extends Schema.Schema.All = typeof Schema.Never,
+    Mode extends FailureMode | undefined = undefined,
+    R = never
+  >(
+    name: Name,
+    options: DefinitionFields<Parameters, Success, Failure, Mode, R>
+  ): ToolWithHandler<
+    Name,
+    {
+      readonly parameters: Schema.Struct<Parameters>
+      readonly success: Success
+      readonly failure: Failure
+      readonly failureMode: Mode extends undefined ? "error" : Mode
+    },
+    R
+  >
+  <
+    const Name extends string,
+    Parameters extends AnyStructSchema,
+    Success extends Schema.Schema.Any = typeof Schema.Void,
+    Failure extends Schema.Schema.All = typeof Schema.Never,
+    Mode extends FailureMode | undefined = undefined,
+    R = never
+  >(
+    name: Name,
+    options: DefinitionSchema<Parameters, Success, Failure, Mode, R>
+  ): ToolWithHandler<
+    Name,
+    {
+      readonly parameters: Parameters
+      readonly success: Success
+      readonly failure: Failure
+      readonly failureMode: Mode extends undefined ? "error" : Mode
+    },
+    R
+  >
+} = (name: string, options: Definition) => {
+  const parameters = "parameters" in options ? options.parameters : undefined
+  const tool = parameters && Schema.isSchema(parameters)
+    ? fromSchema(name, {
+        description: options.description,
+        parameters: parameters as AnyStructSchema,
+        success: options.success,
+        failure: options.failure,
+        failureMode: options.failureMode as FailureMode | undefined
+      })
+    : make(name, {
+        description: options.description,
+        parameters: parameters as Schema.Struct.Fields | undefined,
+        success: options.success,
+        failure: options.failure,
+        failureMode: options.failureMode as FailureMode | undefined
+      })
+  return attachHandler(tool as Any, (options as Definition).handler as any) as any
+}
+
+/**
+ * Define a tool by passing the handler as the last argument.
+ */
+export const fn = <
+  const Name extends string,
+  Parameters extends Schema.Struct.Fields = {},
+  Success extends Schema.Schema.Any = typeof Schema.Void,
+  Failure extends Schema.Schema.All = typeof Schema.Never,
+  Mode extends FailureMode | undefined = undefined,
+  R = never
+>(
+  name: Name,
+  options: Omit<DefinitionFields<Parameters, Success, Failure, Mode, R>, "handler">,
+  handler: DefinitionFields<Parameters, Success, Failure, Mode, R>["handler"]
+): ToolWithHandler<
+  Name,
+  {
+    readonly parameters: Schema.Struct<Parameters>
+    readonly success: Success
+    readonly failure: Failure
+    readonly failureMode: Mode extends undefined ? "error" : Mode
+  },
+  R
+> => define(name, { ...options, handler })
 
 /**
  * Render tool parameters as JSON Schema (useful for MCP registration).

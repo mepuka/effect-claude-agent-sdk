@@ -41,7 +41,7 @@
     "prepare": "effect-language-service patch",
     "build": "tsup",
     "test": "bun test",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p cloudflare/tsconfig.json",
     "prepublishOnly": "bun run build",
     "changeset": "changeset",
     "version": "changeset version",
@@ -49,6 +49,7 @@
   },
   "devDependencies": {
     "@changesets/cli": "^2.29.8",
+    "@cloudflare/workers-types": "^4.20250515.0",
     "@effect/language-service": "^0.70.0",
     "@types/bun": "latest",
     "effect-solutions": "^0.4.13",
@@ -65,6 +66,8 @@
     "@effect/platform": "^0.94.1",
     "@effect/platform-bun": "^0.87.0",
     "@effect/rpc": "^0.73.0",
+    "@effect/sql-d1": "^0.47.0",
+    "@effect/sql-sqlite-do": "^0.27.0",
     "effect": "^3.19.14",
     "zod": "^4.0.0"
   }

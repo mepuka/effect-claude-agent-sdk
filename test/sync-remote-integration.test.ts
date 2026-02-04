@@ -83,7 +83,9 @@ const makeReplicaLayer = (
   )
 }
 
-test("Remote sync converges and resumes after reconnect", { timeout: 15000 }, async () => {
+test(
+  "Remote sync converges and resumes after reconnect",
+  async () => {
   if (!(await canListen())) return
   const program = Effect.scoped(
     Effect.gen(function*() {
@@ -158,4 +160,6 @@ test("Remote sync converges and resumes after reconnect", { timeout: 15000 }, as
   const result = await runEffectLive(program)
   expect(result.listB).toHaveLength(1)
   expect(result.listA.map((event) => event.sequence)).toEqual([1, 2])
-})
+  },
+  { timeout: 15000 }
+)
