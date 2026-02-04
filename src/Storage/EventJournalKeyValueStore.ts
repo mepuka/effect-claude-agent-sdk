@@ -146,33 +146,26 @@ export const make = (options?: { readonly key?: string }) =>
             ? yield* options.compact(uncommittedRemotes)
             : [[uncommitted, uncommittedRemotes]] as const
 
-          const policyOption = yield* Effect.serviceOption(ConflictPolicy)
-          const auditOption = yield* Effect.serviceOption(SyncAudit)
+          const policy = yield* ConflictPolicy
+          const audit = yield* SyncAudit
           const remoteIdString = remoteIdToString(options.remoteId)
 
           const resolveConflict = (
             entry: EventJournal.Entry,
             conflicts: ReadonlyArray<EventJournal.Entry>
           ) =>
-            Option.match(policyOption, {
-              onNone: () => Effect.succeed(resolveDefaultConflict(entry, conflicts)),
-              onSome: (policy) => policy.resolve({ entry, conflicts })
-            })
+            policy.resolve({ entry, conflicts })
 
           const emitConflict = (
             entry: EventJournal.Entry,
             conflicts: ReadonlyArray<EventJournal.Entry>,
             resolution: ConflictResolution
           ) =>
-            Option.match(auditOption, {
-              onNone: () => Effect.void,
-              onSome: (audit) =>
-                audit.conflict({
-                  remoteId: remoteIdString,
-                  entry,
-                  conflicts,
-                  resolution
-                })
+            audit.conflict({
+              remoteId: remoteIdString,
+              entry,
+              conflicts,
+              resolution
             })
 
           const emitCompaction = (
@@ -180,15 +173,11 @@ export const make = (options?: { readonly key?: string }) =>
             after: number,
             events: ReadonlyArray<string>
           ) =>
-            Option.match(auditOption, {
-              onNone: () => Effect.void,
-              onSome: (audit) =>
-                audit.compaction({
-                  remoteId: remoteIdString,
-                  before,
-                  after,
-                  events
-                })
+            audit.compaction({
+              remoteId: remoteIdString,
+              before,
+              after,
+              events
             })
 
           let didInsert = false

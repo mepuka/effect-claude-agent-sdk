@@ -131,26 +131,46 @@ const emptyState: SessionIndexState = {
   meta: new Map()
 }
 
-export class SessionIndexStore extends Context.Tag("@effect/claude-agent-sdk/SessionIndexStore")<
-  SessionIndexStore,
+export type SessionIndexStoreService = {
+  readonly touch: (
+    sessionId: string,
+    options?: SessionIndexTouchOptions
+  ) => Effect.Effect<SessionMeta, StorageError>
+  readonly get: (
+    sessionId: string
+  ) => Effect.Effect<Option.Option<SessionMeta>, StorageError>
+  readonly list: (
+    options?: SessionIndexListOptions
+  ) => Effect.Effect<ReadonlyArray<SessionMeta>, StorageError>
+  readonly listIds: () => Effect.Effect<ReadonlyArray<string>, StorageError>
+  readonly remove: (sessionId: string) => Effect.Effect<void, StorageError>
+  readonly listPage: (
+    options?: SessionIndexListOptions
+  ) => Effect.Effect<SessionIndexPage, StorageError>
+}
+
+const defaultSessionIndexStore: SessionIndexStoreService = {
+  touch: (sessionId, options) =>
+    Effect.succeed(
+      SessionMeta.make({
+        sessionId,
+        createdAt: options?.createdAt ?? options?.updatedAt ?? 0,
+        updatedAt: options?.updatedAt ?? options?.createdAt ?? 0
+      })
+    ),
+  get: () => Effect.succeed(Option.none()),
+  list: () => Effect.succeed([]),
+  listIds: () => Effect.succeed([]),
+  remove: () => Effect.void,
+  listPage: () => Effect.succeed({ items: [] })
+}
+
+export class SessionIndexStore extends Context.Reference<SessionIndexStore>()(
+  "@effect/claude-agent-sdk/SessionIndexStore",
   {
-    readonly touch: (
-      sessionId: string,
-      options?: SessionIndexTouchOptions
-    ) => Effect.Effect<SessionMeta, StorageError>
-    readonly get: (
-      sessionId: string
-    ) => Effect.Effect<Option.Option<SessionMeta>, StorageError>
-    readonly list: (
-      options?: SessionIndexListOptions
-    ) => Effect.Effect<ReadonlyArray<SessionMeta>, StorageError>
-    readonly listIds: () => Effect.Effect<ReadonlyArray<string>, StorageError>
-    readonly remove: (sessionId: string) => Effect.Effect<void, StorageError>
-    readonly listPage: (
-      options?: SessionIndexListOptions
-    ) => Effect.Effect<SessionIndexPage, StorageError>
+    defaultValue: () => defaultSessionIndexStore
   }
->() {
+) {
   static readonly layerMemory = Layer.effect(
     SessionIndexStore,
     Effect.gen(function*() {

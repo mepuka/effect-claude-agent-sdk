@@ -50,10 +50,14 @@ const remoteIdToString = (remoteId: Uint8Array) =>
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("")
 
-export class SyncConfig extends Context.Tag("@effect/claude-agent-sdk/SyncConfig")<
-  SyncConfig,
-  SyncConfigOptions
->() {
+const defaultSyncConfig: SyncConfigOptions = {}
+
+export class SyncConfig extends Context.Reference<SyncConfig>()(
+  "@effect/claude-agent-sdk/SyncConfig",
+  {
+    defaultValue: () => defaultSyncConfig
+  }
+) {
   static readonly layer = (options: SyncConfigOptions) =>
     Layer.succeed(SyncConfig, options)
 }
@@ -406,9 +410,9 @@ function make() {
       )
 
     yield* Effect.gen(function*() {
-      const syncConfig = yield* Effect.serviceOption(SyncConfig)
-      if (Option.isSome(syncConfig) && syncConfig.value.syncInterval !== undefined) {
-        const interval = syncConfig.value.syncInterval
+      const syncConfig = yield* SyncConfig
+      if (syncConfig.syncInterval !== undefined) {
+        const interval = syncConfig.syncInterval
         if (Duration.toMillis(interval) <= 0) return
         yield* Effect.repeat(syncNow(), Schedule.spaced(interval))
         return

@@ -23,7 +23,7 @@ const toPrompt = (input: QueryInputType): string | AsyncIterable<SDKUserMessage>
     : toAsyncIterable(input.prompt)
 
 const withProbeHandle = <A>(
-  runtime: AgentRuntime["Type"],
+  runtime: AgentRuntime,
   use: (handle: QueryHandle) => Effect.Effect<A, AgentSdkError, never>
 ): Effect.Effect<A, AgentSdkError | QuerySupervisorError, never> =>
   Effect.scoped(

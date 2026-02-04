@@ -48,7 +48,7 @@ test("agent HTTP API serves query and stats", async () => {
       interrupt: Effect.void
     }) as unknown as QueryHandle
 
-  const runtime = AgentRuntime.of({
+  const runtime = AgentRuntime.make({
     query: () => Effect.succeed(makeHandle()),
     queryRaw: () => Effect.succeed(makeHandle()),
     stream: () => Stream.fromIterable([makeSuccessMessage("ok")]),
@@ -133,7 +133,7 @@ test("agent HTTP API metadata uses queryRaw", async () => {
       interrupt: Effect.void
     }) as unknown as QueryHandle
 
-  const runtime = AgentRuntime.of({
+  const runtime = AgentRuntime.make({
     query: () => Effect.dieMessage("query should not be used for metadata"),
     queryRaw: () => Effect.sync(makeHandle),
     stream: () => Stream.empty,

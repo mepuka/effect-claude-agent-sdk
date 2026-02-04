@@ -1,5 +1,4 @@
 import * as Effect from "effect/Effect"
-import * as Option from "effect/Option"
 import { AgentLoggingConfig } from "./Config.js"
 import { matchHookInput, matchQueryEvent, matchSdkMessage } from "./Match.js"
 import type { HookInput } from "../Schema/Hooks.js"
@@ -8,14 +7,7 @@ import type { QueryEvent } from "../QuerySupervisor.js"
 import type { AgentLogCategory, AgentLogEvent } from "./Types.js"
 
 const shouldLogCategory = (category: AgentLogCategory) =>
-  Effect.serviceOption(AgentLoggingConfig).pipe(
-    Effect.map((config) =>
-      Option.match(config, {
-        onNone: () => true,
-        onSome: (service) => service.settings.categories[category]
-      })
-    )
-  )
+  Effect.map(AgentLoggingConfig, (config) => config.settings.categories[category])
 
 const logAgentEvent = (event: AgentLogEvent) =>
   Effect.annotateLogs({

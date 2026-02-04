@@ -126,24 +126,14 @@ const resolveEnabled = Effect.gen(function*() {
 })
 
 const touchSessionIndex = (sessionId: string, timestamp: number) =>
-  Effect.serviceOption(SessionIndexStore).pipe(
-    Effect.flatMap((maybe) =>
-      Option.isNone(maybe)
-        ? Effect.void
-        : maybe.value.touch(sessionId, { updatedAt: timestamp }).pipe(Effect.asVoid)
-    ),
-    Effect.catchAll(() => Effect.void)
-  )
+  Effect.flatMap(SessionIndexStore, (store) =>
+    store.touch(sessionId, { updatedAt: timestamp }).pipe(Effect.asVoid)
+  ).pipe(Effect.catchAll(() => Effect.void))
 
 const removeSessionIndex = (sessionId: string) =>
-  Effect.serviceOption(SessionIndexStore).pipe(
-    Effect.flatMap((maybe) =>
-      Option.isNone(maybe)
-        ? Effect.void
-        : maybe.value.remove(sessionId).pipe(Effect.asVoid)
-    ),
-    Effect.catchAll(() => Effect.void)
-  )
+  Effect.flatMap(SessionIndexStore, (store) =>
+    store.remove(sessionId).pipe(Effect.asVoid)
+  ).pipe(Effect.catchAll(() => Effect.void))
 
 const sizeOfRecord = (record: ArtifactRecord) =>
   record.sizeBytes ?? new TextEncoder().encode(record.content).length
@@ -640,9 +630,8 @@ const makeJournaledStore = (options?: {
       if (!enabled) return
       const retention = yield* resolveRetention
       if (!retention) return
-      const indexOption = yield* Effect.serviceOption(SessionIndexStore)
-      if (Option.isNone(indexOption)) return
-      const sessionIds = yield* indexOption.value.listIds()
+      const index = yield* SessionIndexStore
+      const sessionIds = yield* index.listIds()
       if (sessionIds.length === 0) return
       const now = yield* Clock.currentTimeMillis
 
@@ -1005,9 +994,8 @@ export class ArtifactStore extends Context.Tag("@effect/claude-agent-sdk/Artifac
           if (!enabled) return
           const retention = yield* resolveRetention
           if (!retention) return
-          const indexOption = yield* Effect.serviceOption(SessionIndexStore)
-          if (Option.isNone(indexOption)) return
-          const sessionIds = yield* indexOption.value.listIds()
+          const index = yield* SessionIndexStore
+          const sessionIds = yield* index.listIds()
           if (sessionIds.length === 0) return
           const now = yield* Clock.currentTimeMillis
 

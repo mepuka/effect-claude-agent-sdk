@@ -21,12 +21,12 @@ const toPrompt = (input: QueryInputType): string | AsyncIterable<SDKUserMessage>
     ? input.prompt
     : toAsyncIterable(input.prompt)
 
-const toStream = (runtime: AgentRuntime["Type"], input: QueryInputType) =>
+const toStream = (runtime: AgentRuntime, input: QueryInputType) =>
   runtime.stream(toPrompt(input), input.options)
 
 // Metadata calls require an active query handle; use a minimal probe query.
 const withProbeHandle = <A>(
-  runtime: AgentRuntime["Type"],
+  runtime: AgentRuntime,
   use: (handle: QueryHandle) => Effect.Effect<A, AgentSdkError, never>
 ): Effect.Effect<A, AgentSdkError | QuerySupervisorError, never> =>
   Effect.scoped(

@@ -197,76 +197,61 @@ const recordHandleWithStore = Effect.fn("AgentRuntime.recordHandleWithStore")(fu
   }
 })
 
+const makeAgentRuntime = Effect.gen(function*() {
+  const { settings } = yield* AgentRuntimeConfig
+  const supervisor = yield* QuerySupervisor
+
+  const runQuery = (prompt: string | AsyncIterable<SDKUserMessage>, options?: Options) => {
+    const merged = mergeOptions(settings.defaultOptions, options)
+    return applyRetry(
+      supervisor.submit(prompt, merged),
+      settings
+    )
+  }
+
+  const query = Effect.fn("AgentRuntime.query")(function*(
+    prompt: string | AsyncIterable<SDKUserMessage>,
+    options?: Options
+  ) {
+    const handle = yield* runQuery(prompt, options)
+    return yield* decorateHandle(handle, settings)
+  })
+
+  const queryRaw = Effect.fn("AgentRuntime.queryRaw")(function*(
+    prompt: string | AsyncIterable<SDKUserMessage>,
+    options?: Options
+  ) {
+    return yield* runQuery(prompt, options)
+  })
+
+  const stream = (prompt: string | AsyncIterable<SDKUserMessage>, options?: Options) =>
+    Stream.unwrapScoped(
+      query(prompt, options).pipe(Effect.map((handle) => handle.stream))
+    )
+
+  return {
+    query,
+    queryRaw,
+    stream,
+    stats: supervisor.stats,
+    interruptAll: supervisor.interruptAll,
+    events: supervisor.events
+  }
+})
+
 /**
  * AgentRuntime composes AgentSdk, QuerySupervisor, and runtime policies.
  */
-export class AgentRuntime extends Context.Tag("@effect/claude-agent-sdk/AgentRuntime")<
-  AgentRuntime,
+export class AgentRuntime extends Effect.Service<AgentRuntime>()(
+  "@effect/claude-agent-sdk/AgentRuntime",
   {
-    readonly query: (
-      prompt: string | AsyncIterable<SDKUserMessage>,
-      options?: Options
-    ) => Effect.Effect<QueryHandle, AgentSdkError | QuerySupervisorError, Scope.Scope>
-    readonly queryRaw: (
-      prompt: string | AsyncIterable<SDKUserMessage>,
-      options?: Options
-    ) => Effect.Effect<QueryHandle, AgentSdkError | QuerySupervisorError, Scope.Scope>
-    readonly stream: (
-      prompt: string | AsyncIterable<SDKUserMessage>,
-      options?: Options
-    ) => Stream.Stream<SDKMessage, AgentSdkError | QuerySupervisorError>
-    readonly stats: Effect.Effect<QuerySupervisorStats>
-    readonly interruptAll: Effect.Effect<void, AgentSdkError>
-    readonly events: Stream.Stream<QueryEvent>
+    effect: makeAgentRuntime
   }
->() {
+) {
   /**
    * Build the AgentRuntime service using AgentRuntimeConfig.
    */
-  static readonly layer = Layer.effect(
-    AgentRuntime,
-    Effect.gen(function*() {
-      const { settings } = yield* AgentRuntimeConfig
-      const supervisor = yield* QuerySupervisor
-
-      const runQuery = (prompt: string | AsyncIterable<SDKUserMessage>, options?: Options) => {
-        const merged = mergeOptions(settings.defaultOptions, options)
-        return applyRetry(
-          supervisor.submit(prompt, merged),
-          settings
-        )
-      }
-
-      const query = Effect.fn("AgentRuntime.query")(function*(
-        prompt: string | AsyncIterable<SDKUserMessage>,
-        options?: Options
-      ) {
-        const handle = yield* runQuery(prompt, options)
-        return yield* decorateHandle(handle, settings)
-      })
-
-      const queryRaw = Effect.fn("AgentRuntime.queryRaw")(function*(
-        prompt: string | AsyncIterable<SDKUserMessage>,
-        options?: Options
-      ) {
-        return yield* runQuery(prompt, options)
-      })
-
-      const stream = (prompt: string | AsyncIterable<SDKUserMessage>, options?: Options) =>
-        Stream.unwrapScoped(
-          query(prompt, options).pipe(Effect.map((handle) => handle.stream))
-        )
-
-      return AgentRuntime.of({
-        query,
-        queryRaw,
-        stream,
-        stats: supervisor.stats,
-        interruptAll: supervisor.interruptAll,
-        events: supervisor.events
-      })
-    })
-  )
+  static readonly layer = AgentRuntime.Default
 
   /**
    * Convenience layer that wires AgentRuntimeConfig from defaults.
@@ -390,7 +375,7 @@ export class AgentRuntime extends Context.Tag("@effect/claude-agent-sdk/AgentRun
             query(prompt, opts).pipe(Effect.map((handle) => handle.stream))
           )
 
-        return AgentRuntime.of({
+        return AgentRuntime.make({
           query,
           queryRaw,
           stream,

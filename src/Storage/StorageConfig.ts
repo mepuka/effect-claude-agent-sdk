@@ -1,5 +1,4 @@
 import * as Config from "effect/Config"
-import * as Context from "effect/Context"
 import * as Duration from "effect/Duration"
 import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
@@ -97,10 +96,154 @@ const normalizeDuration = (
   fallback: Duration.Duration
 ) => Option.getOrElse(value, () => fallback)
 
-export class StorageConfig extends Context.Tag("@effect/claude-agent-sdk/StorageConfig")<
-  StorageConfig,
-  StorageConfigSettings
->() {
+const makeStorageConfig = Effect.gen(function*() {
+  const chatEnabled = yield* Config.option(
+    Config.boolean("STORAGE_CHAT_ENABLED")
+  )
+  const artifactsEnabled = yield* Config.option(
+    Config.boolean("STORAGE_ARTIFACTS_ENABLED")
+  )
+  const auditEnabled = yield* Config.option(
+    Config.boolean("STORAGE_AUDIT_ENABLED")
+  )
+
+  const chatMaxEvents = yield* Config.option(
+    Config.integer("STORAGE_CHAT_MAX_EVENTS")
+  )
+  const chatMaxAge = yield* Config.option(
+    Config.duration("STORAGE_CHAT_MAX_AGE")
+  )
+
+  const artifactMaxCount = yield* Config.option(
+    Config.integer("STORAGE_ARTIFACT_MAX_COUNT")
+  )
+  const artifactMaxBytes = yield* Config.option(
+    Config.integer("STORAGE_ARTIFACT_MAX_BYTES")
+  )
+  const artifactMaxAge = yield* Config.option(
+    Config.duration("STORAGE_ARTIFACT_MAX_AGE")
+  )
+
+  const auditMaxEntries = yield* Config.option(
+    Config.integer("STORAGE_AUDIT_MAX_ENTRIES")
+  )
+  const auditMaxAge = yield* Config.option(
+    Config.duration("STORAGE_AUDIT_MAX_AGE")
+  )
+
+  const chatPageSize = yield* Config.option(
+    Config.integer("STORAGE_CHAT_PAGE_SIZE")
+  )
+  const artifactPageSize = yield* Config.option(
+    Config.integer("STORAGE_ARTIFACT_PAGE_SIZE")
+  )
+  const indexPageSize = yield* Config.option(
+    Config.integer("STORAGE_INDEX_PAGE_SIZE")
+  )
+
+  const cleanupEnabled = yield* Config.option(
+    Config.boolean("STORAGE_CLEANUP_ENABLED")
+  )
+  const cleanupInterval = yield* Config.option(
+    Config.duration("STORAGE_CLEANUP_INTERVAL")
+  )
+  const cleanupRunOnStart = yield* Config.option(
+    Config.boolean("STORAGE_CLEANUP_RUN_ON_START")
+  )
+  const syncInterval = yield* Config.option(
+    Config.duration("STORAGE_SYNC_INTERVAL")
+  )
+
+  const settings: StorageConfigData = {
+    enabled: {
+      chatHistory: normalizeBoolean(chatEnabled, defaultSettings.enabled.chatHistory),
+      artifacts: normalizeBoolean(artifactsEnabled, defaultSettings.enabled.artifacts),
+      auditLog: normalizeBoolean(auditEnabled, defaultSettings.enabled.auditLog)
+    },
+    retention: {
+      chat: {
+        maxEvents: normalizeNumber(
+          chatMaxEvents,
+          defaultSettings.retention.chat.maxEvents,
+          0
+        ),
+        maxAge: normalizeDuration(
+          chatMaxAge,
+          defaultSettings.retention.chat.maxAge
+        )
+      },
+      artifacts: {
+        maxArtifacts: normalizeNumber(
+          artifactMaxCount,
+          defaultSettings.retention.artifacts.maxArtifacts,
+          0
+        ),
+        maxArtifactBytes: normalizeNumber(
+          artifactMaxBytes,
+          defaultSettings.retention.artifacts.maxArtifactBytes,
+          0
+        ),
+        maxAge: normalizeDuration(
+          artifactMaxAge,
+          defaultSettings.retention.artifacts.maxAge
+        )
+      },
+      audit: {
+        maxEntries: normalizeNumber(
+          auditMaxEntries,
+          defaultSettings.retention.audit.maxEntries,
+          0
+        ),
+        maxAge: normalizeDuration(
+          auditMaxAge,
+          defaultSettings.retention.audit.maxAge
+        )
+      }
+    },
+    pagination: {
+      chatPageSize: normalizeNumber(
+        chatPageSize,
+        defaultSettings.pagination.chatPageSize,
+        1
+      ),
+      artifactPageSize: normalizeNumber(
+        artifactPageSize,
+        defaultSettings.pagination.artifactPageSize,
+        1
+      )
+    },
+    kv: {
+      indexPageSize: normalizeNumber(
+        indexPageSize,
+        defaultSettings.kv.indexPageSize,
+        1
+      )
+    },
+    cleanup: {
+      enabled: normalizeBoolean(cleanupEnabled, defaultSettings.cleanup.enabled),
+      interval: normalizeDuration(
+        cleanupInterval,
+        defaultSettings.cleanup.interval
+      ),
+      runOnStart: normalizeBoolean(
+        cleanupRunOnStart,
+        defaultSettings.cleanup.runOnStart
+      )
+    },
+    sync: {
+      interval: normalizeDuration(syncInterval, defaultSettings.sync.interval)
+    }
+  }
+
+  return { settings }
+})
+
+export class StorageConfig extends Effect.Service<StorageConfig>()(
+  "@effect/claude-agent-sdk/StorageConfig",
+  {
+    effect: makeStorageConfig
+  }
+) {
   /**
    * Build StorageConfig by reading configuration from environment variables.
    */
@@ -110,148 +253,5 @@ export class StorageConfig extends Context.Tag("@effect/claude-agent-sdk/Storage
   /**
    * Default configuration layer for storage.
    */
-  static readonly layer = Layer.effect(
-    StorageConfig,
-    Effect.gen(function*() {
-      const chatEnabled = yield* Config.option(
-        Config.boolean("STORAGE_CHAT_ENABLED")
-      )
-      const artifactsEnabled = yield* Config.option(
-        Config.boolean("STORAGE_ARTIFACTS_ENABLED")
-      )
-      const auditEnabled = yield* Config.option(
-        Config.boolean("STORAGE_AUDIT_ENABLED")
-      )
-
-      const chatMaxEvents = yield* Config.option(
-        Config.integer("STORAGE_CHAT_MAX_EVENTS")
-      )
-      const chatMaxAge = yield* Config.option(
-        Config.duration("STORAGE_CHAT_MAX_AGE")
-      )
-
-      const artifactMaxCount = yield* Config.option(
-        Config.integer("STORAGE_ARTIFACT_MAX_COUNT")
-      )
-      const artifactMaxBytes = yield* Config.option(
-        Config.integer("STORAGE_ARTIFACT_MAX_BYTES")
-      )
-      const artifactMaxAge = yield* Config.option(
-        Config.duration("STORAGE_ARTIFACT_MAX_AGE")
-      )
-
-      const auditMaxEntries = yield* Config.option(
-        Config.integer("STORAGE_AUDIT_MAX_ENTRIES")
-      )
-      const auditMaxAge = yield* Config.option(
-        Config.duration("STORAGE_AUDIT_MAX_AGE")
-      )
-
-      const chatPageSize = yield* Config.option(
-        Config.integer("STORAGE_CHAT_PAGE_SIZE")
-      )
-      const artifactPageSize = yield* Config.option(
-        Config.integer("STORAGE_ARTIFACT_PAGE_SIZE")
-      )
-      const indexPageSize = yield* Config.option(
-        Config.integer("STORAGE_INDEX_PAGE_SIZE")
-      )
-
-      const cleanupEnabled = yield* Config.option(
-        Config.boolean("STORAGE_CLEANUP_ENABLED")
-      )
-      const cleanupInterval = yield* Config.option(
-        Config.duration("STORAGE_CLEANUP_INTERVAL")
-      )
-      const cleanupRunOnStart = yield* Config.option(
-        Config.boolean("STORAGE_CLEANUP_RUN_ON_START")
-      )
-      const syncInterval = yield* Config.option(
-        Config.duration("STORAGE_SYNC_INTERVAL")
-      )
-
-      const settings: StorageConfigData = {
-        enabled: {
-          chatHistory: normalizeBoolean(chatEnabled, defaultSettings.enabled.chatHistory),
-          artifacts: normalizeBoolean(artifactsEnabled, defaultSettings.enabled.artifacts),
-          auditLog: normalizeBoolean(auditEnabled, defaultSettings.enabled.auditLog)
-        },
-        retention: {
-          chat: {
-            maxEvents: normalizeNumber(
-              chatMaxEvents,
-              defaultSettings.retention.chat.maxEvents,
-              0
-            ),
-            maxAge: normalizeDuration(
-              chatMaxAge,
-              defaultSettings.retention.chat.maxAge
-            )
-          },
-          artifacts: {
-            maxArtifacts: normalizeNumber(
-              artifactMaxCount,
-              defaultSettings.retention.artifacts.maxArtifacts,
-              0
-            ),
-            maxArtifactBytes: normalizeNumber(
-              artifactMaxBytes,
-              defaultSettings.retention.artifacts.maxArtifactBytes,
-              0
-            ),
-            maxAge: normalizeDuration(
-              artifactMaxAge,
-              defaultSettings.retention.artifacts.maxAge
-            )
-          },
-          audit: {
-            maxEntries: normalizeNumber(
-              auditMaxEntries,
-              defaultSettings.retention.audit.maxEntries,
-              0
-            ),
-            maxAge: normalizeDuration(
-              auditMaxAge,
-              defaultSettings.retention.audit.maxAge
-            )
-          }
-        },
-        pagination: {
-          chatPageSize: normalizeNumber(
-            chatPageSize,
-            defaultSettings.pagination.chatPageSize,
-            1
-          ),
-          artifactPageSize: normalizeNumber(
-            artifactPageSize,
-            defaultSettings.pagination.artifactPageSize,
-            1
-          )
-        },
-        kv: {
-          indexPageSize: normalizeNumber(
-            indexPageSize,
-            defaultSettings.kv.indexPageSize,
-            1
-          )
-        },
-        cleanup: {
-          enabled: normalizeBoolean(cleanupEnabled, defaultSettings.cleanup.enabled),
-          interval: normalizeDuration(
-            cleanupInterval,
-            defaultSettings.cleanup.interval
-          ),
-          runOnStart: normalizeBoolean(
-            cleanupRunOnStart,
-            defaultSettings.cleanup.runOnStart
-          )
-        },
-        sync: {
-          interval: normalizeDuration(syncInterval, defaultSettings.sync.interval)
-        }
-      }
-
-      return StorageConfig.of({ settings })
-    })
-  )
+  static readonly layer = StorageConfig.Default
 }

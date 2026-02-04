@@ -35,7 +35,7 @@ const makeDeltaMessage = (text: string): SDKMessage =>
 
 const makeRuntime = (stream: Stream.Stream<SDKMessage>) => {
   const notUsed = Effect.dieMessage("not used") as Effect.Effect<any, any, any>
-  return AgentRuntime.of({
+  return AgentRuntime.make({
     query: () => notUsed as any,
     queryRaw: () => notUsed as any,
     stream: () => stream,

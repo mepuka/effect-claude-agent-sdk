@@ -81,14 +81,16 @@ const parseLogLevel = (value: string) => {
   }
 }
 
-export class AgentLoggingConfig
-  extends Context.Tag("@effect/claude-agent-sdk/AgentLoggingConfig")<
-    AgentLoggingConfig,
-    {
-      readonly settings: AgentLoggingSettings
-    }
-  >()
-{
+const defaultLoggingConfig = {
+  settings: defaultSettings
+}
+
+export class AgentLoggingConfig extends Context.Reference<AgentLoggingConfig>()(
+  "@effect/claude-agent-sdk/AgentLoggingConfig",
+  {
+    defaultValue: () => defaultLoggingConfig
+  }
+) {
   /**
    * Build AgentLoggingConfig by reading configuration from environment variables.
    */

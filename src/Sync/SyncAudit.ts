@@ -18,18 +18,24 @@ export type SyncCompactionAudit = {
   readonly events: ReadonlyArray<string>
 }
 
-export class SyncAudit extends Context.Tag("@effect/claude-agent-sdk/SyncAudit")<
-  SyncAudit,
+export type SyncAuditService = {
+  readonly conflict: (input: SyncConflictAudit) => Effect.Effect<void>
+  readonly compaction: (input: SyncCompactionAudit) => Effect.Effect<void>
+}
+
+const defaultSyncAudit: SyncAuditService = {
+  conflict: () => Effect.void,
+  compaction: () => Effect.void
+}
+
+export class SyncAudit extends Context.Reference<SyncAudit>()(
+  "@effect/claude-agent-sdk/SyncAudit",
   {
-    readonly conflict: (input: SyncConflictAudit) => Effect.Effect<void>
-    readonly compaction: (input: SyncCompactionAudit) => Effect.Effect<void>
+    defaultValue: () => defaultSyncAudit
   }
->() {
+) {
   static readonly layer = Layer.succeed(
     SyncAudit,
-    SyncAudit.of({
-      conflict: () => Effect.void,
-      compaction: () => Effect.void
-    })
+    defaultSyncAudit
   )
 }

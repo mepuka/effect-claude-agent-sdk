@@ -44,7 +44,7 @@ test("AgentSdk.query surfaces failures from streaming prompt", async () => {
   }
 
   const layer = AgentSdk.layer.pipe(
-    Layer.provide(Layer.succeed(AgentSdkConfig, { options: {} }))
+    Layer.provide(Layer.succeed(AgentSdkConfig, AgentSdkConfig.make({ options: {} })))
   )
 
   const program = Effect.scoped(
@@ -72,7 +72,7 @@ test("AgentSdk.query closeInput does not fail output stream", async () => {
   }
 
   const layer = AgentSdk.layer.pipe(
-    Layer.provide(Layer.succeed(AgentSdkConfig, { options: {} }))
+    Layer.provide(Layer.succeed(AgentSdkConfig, AgentSdkConfig.make({ options: {} })))
   )
 
   const program = Effect.scoped(

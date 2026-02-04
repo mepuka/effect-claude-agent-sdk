@@ -72,16 +72,23 @@ test("AgentRuntime interrupts queries on timeout", async () => {
   }
 
   const supervisorLayer = QuerySupervisor.layer.pipe(
-    Layer.provide(Layer.succeed(QuerySupervisorConfig, { settings: supervisorSettings })),
+    Layer.provide(
+      Layer.succeed(
+        QuerySupervisorConfig,
+        QuerySupervisorConfig.make({ settings: supervisorSettings })
+      )
+    ),
     Layer.provide(
       AgentSdk.layer.pipe(
-        Layer.provide(Layer.succeed(AgentSdkConfig, { options: {} }))
+        Layer.provide(Layer.succeed(AgentSdkConfig, AgentSdkConfig.make({ options: {} })))
       )
     )
   )
 
   const runtimeLayer = AgentRuntime.layer.pipe(
-    Layer.provide(Layer.succeed(AgentRuntimeConfig, { settings: runtimeSettings })),
+    Layer.provide(
+      Layer.succeed(AgentRuntimeConfig, AgentRuntimeConfig.make({ settings: runtimeSettings }))
+    ),
     Layer.provide(supervisorLayer)
   )
 

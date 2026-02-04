@@ -1,5 +1,4 @@
 import * as Config from "effect/Config"
-import * as Context from "effect/Context"
 import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
 import * as Option from "effect/Option"
@@ -33,10 +32,73 @@ const parseOptionalList = (value: Option.Option<string>) =>
     return entries.length > 0 ? Option.some(entries) : Option.none()
   })
 
-export class SessionConfig extends Context.Tag("@effect/claude-agent-sdk/SessionConfig")<
-  SessionConfig,
-  SessionConfigSettings
->() {
+const makeSessionConfig = Effect.gen(function*() {
+  const apiKey = normalizeRedacted(
+    yield* Config.option(Config.redacted("ANTHROPIC_API_KEY"))
+  )
+  const apiKeyFallback = normalizeRedacted(
+    yield* Config.option(Config.redacted("API_KEY"))
+  )
+  const sessionAccessToken = normalizeRedacted(
+    yield* Config.option(Config.redacted("CLAUDE_CODE_SESSION_ACCESS_TOKEN"))
+  )
+
+  const executable = yield* Config.option(
+    Schema.Config("EXECUTABLE", Schema.Literal("bun", "node"))
+  )
+  const pathToClaudeCodeExecutable = yield* Config.option(
+    Config.string("PATH_TO_CLAUDE_CODE_EXECUTABLE")
+  )
+  const executableArgsValue = yield* Config.option(Config.string("EXECUTABLE_ARGS"))
+  const permissionMode = yield* Config.option(
+    Schema.Config("PERMISSION_MODE", SessionPermissionMode)
+  )
+  const allowedToolsValue = yield* Config.option(Config.string("ALLOWED_TOOLS"))
+  const disallowedToolsValue = yield* Config.option(Config.string("DISALLOWED_TOOLS"))
+  const executableArgs = parseOptionalList(executableArgsValue)
+  const allowedTools = parseOptionalList(allowedToolsValue)
+  const disallowedTools = parseOptionalList(disallowedToolsValue)
+
+  const processEnv = yield* Effect.sync(() => process.env)
+  const resolvedApiKey = Option.isSome(apiKey) ? apiKey : apiKeyFallback
+  const authEnvOverrides = {
+    ...(Option.isSome(resolvedApiKey)
+      ? { ANTHROPIC_API_KEY: Redacted.value(resolvedApiKey.value) }
+      : {}),
+    ...(Option.isSome(sessionAccessToken)
+      ? {
+          CLAUDE_CODE_SESSION_ACCESS_TOKEN: Redacted.value(sessionAccessToken.value)
+        }
+      : {})
+  }
+  const env =
+    Object.keys(authEnvOverrides).length > 0
+      ? { ...processEnv, ...authEnvOverrides }
+      : undefined
+
+  if (!Option.isSome(resolvedApiKey) && !Option.isSome(sessionAccessToken)) {
+    return yield* missingCredentialsError()
+  }
+
+  const defaults: SessionDefaults = {
+    executable: Option.getOrUndefined(executable) ?? "bun",
+    pathToClaudeCodeExecutable: Option.getOrUndefined(pathToClaudeCodeExecutable),
+    ...(Option.isSome(executableArgs) ? { executableArgs: executableArgs.value } : {}),
+    permissionMode: Option.getOrUndefined(permissionMode),
+    ...(Option.isSome(allowedTools) ? { allowedTools: allowedTools.value } : {}),
+    ...(Option.isSome(disallowedTools) ? { disallowedTools: disallowedTools.value } : {}),
+    ...(env ? { env } : {})
+  }
+
+  return { defaults }
+})
+
+export class SessionConfig extends Effect.Service<SessionConfig>()(
+  "@effect/claude-agent-sdk/SessionConfig",
+  {
+    effect: makeSessionConfig
+  }
+) {
   /**
    * Build SessionConfig by reading configuration from environment variables.
    */
@@ -46,69 +108,5 @@ export class SessionConfig extends Context.Tag("@effect/claude-agent-sdk/Session
   /**
    * Default configuration layer for sessions (model must be supplied per session).
    */
-  static readonly layer = Layer.effect(
-    SessionConfig,
-    Effect.gen(function*() {
-      const apiKey = normalizeRedacted(
-        yield* Config.option(Config.redacted("ANTHROPIC_API_KEY"))
-      )
-      const apiKeyFallback = normalizeRedacted(
-        yield* Config.option(Config.redacted("API_KEY"))
-      )
-      const sessionAccessToken = normalizeRedacted(
-        yield* Config.option(Config.redacted("CLAUDE_CODE_SESSION_ACCESS_TOKEN"))
-      )
-
-      const executable = yield* Config.option(
-        Schema.Config("EXECUTABLE", Schema.Literal("bun", "node"))
-      )
-      const pathToClaudeCodeExecutable = yield* Config.option(
-        Config.string("PATH_TO_CLAUDE_CODE_EXECUTABLE")
-      )
-      const executableArgsValue = yield* Config.option(Config.string("EXECUTABLE_ARGS"))
-      const permissionMode = yield* Config.option(
-        Schema.Config("PERMISSION_MODE", SessionPermissionMode)
-      )
-      const allowedToolsValue = yield* Config.option(Config.string("ALLOWED_TOOLS"))
-      const disallowedToolsValue = yield* Config.option(Config.string("DISALLOWED_TOOLS"))
-      const executableArgs = parseOptionalList(executableArgsValue)
-      const allowedTools = parseOptionalList(allowedToolsValue)
-      const disallowedTools = parseOptionalList(disallowedToolsValue)
-
-      const processEnv = yield* Effect.sync(() => process.env)
-      const resolvedApiKey = Option.isSome(apiKey) ? apiKey : apiKeyFallback
-      const authEnvOverrides = {
-        ...(Option.isSome(resolvedApiKey)
-          ? { ANTHROPIC_API_KEY: Redacted.value(resolvedApiKey.value) }
-          : {}),
-        ...(Option.isSome(sessionAccessToken)
-          ? {
-              CLAUDE_CODE_SESSION_ACCESS_TOKEN: Redacted.value(sessionAccessToken.value)
-            }
-          : {})
-      }
-      const env =
-        Object.keys(authEnvOverrides).length > 0
-          ? { ...processEnv, ...authEnvOverrides }
-          : undefined
-
-      if (!Option.isSome(resolvedApiKey) && !Option.isSome(sessionAccessToken)) {
-        return yield* missingCredentialsError()
-      }
-
-      const defaults: SessionDefaults = {
-        executable: Option.getOrUndefined(executable) ?? "bun",
-        pathToClaudeCodeExecutable: Option.getOrUndefined(pathToClaudeCodeExecutable),
-        ...(Option.isSome(executableArgs) ? { executableArgs: executableArgs.value } : {}),
-        permissionMode: Option.getOrUndefined(permissionMode),
-        ...(Option.isSome(allowedTools) ? { allowedTools: allowedTools.value } : {}),
-        ...(Option.isSome(disallowedTools) ? { disallowedTools: disallowedTools.value } : {}),
-        ...(env ? { env } : {})
-      }
-
-      return SessionConfig.of({
-        defaults
-      })
-    })
-  )
+  static readonly layer = SessionConfig.Default
 }

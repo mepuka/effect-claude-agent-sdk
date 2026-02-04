@@ -60,10 +60,15 @@ test("QuerySupervisor enforces concurrency limits", async () => {
   const { QuerySupervisorConfig } = await import("../src/QuerySupervisorConfig.js")
 
   const layer = QuerySupervisor.layer.pipe(
-    Layer.provide(Layer.succeed(QuerySupervisorConfig, { settings: baseSettings })),
+    Layer.provide(
+      Layer.succeed(
+        QuerySupervisorConfig,
+        QuerySupervisorConfig.make({ settings: baseSettings })
+      )
+    ),
     Layer.provide(
       AgentSdk.layer.pipe(
-        Layer.provide(Layer.succeed(AgentSdkConfig, { options: {} }))
+        Layer.provide(Layer.succeed(AgentSdkConfig, AgentSdkConfig.make({ options: {} })))
       )
     )
   )
@@ -126,10 +131,12 @@ test("QuerySupervisor times out pending submissions", async () => {
   }
 
   const layer = QuerySupervisor.layer.pipe(
-    Layer.provide(Layer.succeed(QuerySupervisorConfig, { settings })),
+    Layer.provide(
+      Layer.succeed(QuerySupervisorConfig, QuerySupervisorConfig.make({ settings }))
+    ),
     Layer.provide(
       AgentSdk.layer.pipe(
-        Layer.provide(Layer.succeed(AgentSdkConfig, { options: {} }))
+        Layer.provide(Layer.succeed(AgentSdkConfig, AgentSdkConfig.make({ options: {} })))
       )
     )
   )
@@ -179,10 +186,15 @@ test("QuerySupervisor fails pending work when scope closes", async () => {
   const { QuerySupervisorConfig } = await import("../src/QuerySupervisorConfig.js")
 
   const layer = QuerySupervisor.layer.pipe(
-    Layer.provide(Layer.succeed(QuerySupervisorConfig, { settings: baseSettings })),
+    Layer.provide(
+      Layer.succeed(
+        QuerySupervisorConfig,
+        QuerySupervisorConfig.make({ settings: baseSettings })
+      )
+    ),
     Layer.provide(
       AgentSdk.layer.pipe(
-        Layer.provide(Layer.succeed(AgentSdkConfig, { options: {} }))
+        Layer.provide(Layer.succeed(AgentSdkConfig, AgentSdkConfig.make({ options: {} })))
       )
     )
   )
@@ -242,10 +254,12 @@ test("QuerySupervisor drops when queue is full", async () => {
   }
 
   const layer = QuerySupervisor.layer.pipe(
-    Layer.provide(Layer.succeed(QuerySupervisorConfig, { settings })),
+    Layer.provide(
+      Layer.succeed(QuerySupervisorConfig, QuerySupervisorConfig.make({ settings }))
+    ),
     Layer.provide(
       AgentSdk.layer.pipe(
-        Layer.provide(Layer.succeed(AgentSdkConfig, { options: {} }))
+        Layer.provide(Layer.succeed(AgentSdkConfig, AgentSdkConfig.make({ options: {} })))
       )
     )
   )
@@ -321,10 +335,12 @@ test("QuerySupervisor publishes lifecycle events", async () => {
   }
 
   const layer = QuerySupervisor.layer.pipe(
-    Layer.provide(Layer.succeed(QuerySupervisorConfig, { settings })),
+    Layer.provide(
+      Layer.succeed(QuerySupervisorConfig, QuerySupervisorConfig.make({ settings }))
+    ),
     Layer.provide(
       AgentSdk.layer.pipe(
-        Layer.provide(Layer.succeed(AgentSdkConfig, { options: {} }))
+        Layer.provide(Layer.succeed(AgentSdkConfig, AgentSdkConfig.make({ options: {} })))
       )
     )
   )

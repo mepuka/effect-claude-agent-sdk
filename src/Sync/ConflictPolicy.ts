@@ -45,25 +45,31 @@ const pickEarliest = (entries: ReadonlyArray<EventJournal.Entry>) =>
       entries[0]!
     )
 
-export class ConflictPolicy extends Context.Tag("@effect/claude-agent-sdk/ConflictPolicy")<
-  ConflictPolicy,
+export type ConflictPolicyService = {
+  readonly resolve: (options: {
+    readonly entry: EventJournal.Entry
+    readonly conflicts: ReadonlyArray<EventJournal.Entry>
+  }) => Effect.Effect<ConflictResolution>
+}
+
+const defaultConflictPolicy: ConflictPolicyService = {
+  resolve: ({ entry, conflicts }) =>
+    Effect.succeed(
+      accept(
+        pickLatest([entry, ...conflicts])
+      )
+    )
+}
+
+export class ConflictPolicy extends Context.Reference<ConflictPolicy>()(
+  "@effect/claude-agent-sdk/ConflictPolicy",
   {
-    readonly resolve: (options: {
-      readonly entry: EventJournal.Entry
-      readonly conflicts: ReadonlyArray<EventJournal.Entry>
-    }) => Effect.Effect<ConflictResolution>
+    defaultValue: () => defaultConflictPolicy
   }
->() {
+) {
   static readonly layerLastWriteWins = Layer.succeed(
     ConflictPolicy,
-    ConflictPolicy.of({
-      resolve: ({ entry, conflicts }) =>
-        Effect.succeed(
-          accept(
-            pickLatest([entry, ...conflicts])
-          )
-        )
-    })
+    defaultConflictPolicy
   )
 
   static readonly layerFirstWriteWins = Layer.succeed(

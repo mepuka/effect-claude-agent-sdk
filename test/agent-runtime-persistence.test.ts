@@ -41,7 +41,7 @@ const makeRuntimeLayer = (messages: ReadonlyArray<SDKMessage>) => {
   const handle = makeHandle(messages)
   return Layer.succeed(
     AgentRuntime,
-    AgentRuntime.of({
+    AgentRuntime.make({
       query: (_prompt, _options) => Effect.succeed(handle),
       queryRaw: (_prompt, _options) => Effect.succeed(handle),
       stream: (_prompt, _options) => handle.stream,
