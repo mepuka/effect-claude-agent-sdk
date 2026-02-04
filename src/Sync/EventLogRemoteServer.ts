@@ -41,6 +41,31 @@ export const toWebSocketUrl = (
   return `${scheme}://${formattedHostname}:${address.port}${path}`
 }
 
+export type EventLogRemoteServerError = {
+  readonly _tag: "EventLogRemoteServerError"
+  readonly message: string
+  readonly cause?: unknown
+}
+
+const toWebSocketUrlError = (cause: unknown): EventLogRemoteServerError => ({
+  _tag: "EventLogRemoteServerError",
+  message: cause instanceof Error ? cause.message : "Failed to build WebSocket URL.",
+  cause
+})
+
+export const toWebSocketUrlEffect = (
+  address: HttpServer.Address,
+  options?: {
+    readonly path?: string
+    readonly hostname?: string
+    readonly scheme?: "ws" | "wss"
+  }
+) =>
+  Effect.try({
+    try: () => toWebSocketUrl(address, options),
+    catch: toWebSocketUrlError
+  })
+
 export class EventLogRemoteServer extends Context.Tag("@effect/claude-agent-sdk/EventLogRemoteServer")<
   EventLogRemoteServer,
   { readonly address: HttpServer.Address; readonly url: string }
@@ -115,19 +140,18 @@ const buildBunWebSocketLayer = (
 
   const serviceLayer = Layer.effect(
     EventLogRemoteServer,
-    Effect.map(HttpServer.HttpServer, (server) =>
-      EventLogRemoteServer.of({
-        address: server.address,
-        url: toWebSocketUrl(
-          server.address,
-          {
-            path,
-            ...(options.hostname !== undefined ? { hostname: options.hostname } : {}),
-            ...(options.scheme !== undefined ? { scheme: options.scheme } : {})
-          }
-        )
+    Effect.gen(function*() {
+      const server = yield* HttpServer.HttpServer
+      const url = yield* toWebSocketUrlEffect(server.address, {
+        path,
+        ...(options.hostname !== undefined ? { hostname: options.hostname } : {}),
+        ...(options.scheme !== undefined ? { scheme: options.scheme } : {})
       })
-    )
+      return EventLogRemoteServer.of({
+        address: server.address,
+        url
+      })
+    })
   )
 
   return Layer.merge(serveLayer, serviceLayer).pipe(
