@@ -14,6 +14,7 @@ coverage
 logs
 _.log
 report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
+cron-log.jsonl
 
 # dotenv environment variable files
 .env
@@ -36,3 +37,6 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # Effect reference repository
 .reference/
+
+# local tooling
+.claude/

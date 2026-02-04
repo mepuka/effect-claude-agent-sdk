@@ -68,6 +68,9 @@ export class SyncService extends Context.Tag("@effect/claude-agent-sdk/SyncServi
     readonly connect: (remote: EventLogRemote.EventLogRemote) => Effect.Effect<void>
     readonly connectWebSocket: (url: string, options?: SyncServiceWebSocketOptions) => Effect.Effect<void>
     readonly disconnect: (remoteId: string) => Effect.Effect<void>
+    /**
+     * @deprecated Use `disconnect` instead.
+     */
     readonly disconnectRemoteId: (remoteId: string) => Effect.Effect<void>
     readonly disconnectWebSocket: (url: string) => Effect.Effect<void>
     readonly syncNow: () => Effect.Effect<void>

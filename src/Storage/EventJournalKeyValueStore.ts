@@ -1,5 +1,6 @@
 import * as EventJournal from "@effect/experimental/EventJournal"
 import { KeyValueStore, MsgPack } from "@effect/platform"
+import * as Context from "effect/Context"
 import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
 import * as Option from "effect/Option"
@@ -80,6 +81,34 @@ export const make = (options?: { readonly key?: string }) =>
       }
     }
 
+    const insertSorted = (
+      entries: Array<EventJournal.Entry>,
+      entry: EventJournal.Entry
+    ) => {
+      let low = 0
+      let high = entries.length
+      while (low < high) {
+        const mid = Math.floor((low + high) / 2)
+        const current = entries[mid]!
+        if (current.createdAtMillis <= entry.createdAtMillis) {
+          low = mid + 1
+        } else {
+          high = mid
+        }
+      }
+      entries.splice(low, 0, entry)
+    }
+
+    const addConflictIndex = (entry: EventJournal.Entry) => {
+      const key = conflictKey(entry)
+      const existing = conflictIndex.get(key)
+      if (existing) {
+        existing.push(entry)
+      } else {
+        conflictIndex.set(key, [entry])
+      }
+    }
+
     const withLock = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       journalSemaphore.withPermits(1)(effect)
 
@@ -96,6 +125,29 @@ export const make = (options?: { readonly key?: string }) =>
       remotes.set(remoteIdString, remote)
       return remote
     }
+
+    const withRemoteUncommitted = <A, E, R>(
+      remoteId: EventJournal.RemoteId,
+      f: (entries: Array<EventJournal.Entry>) => Effect.Effect<A, E, R>
+    ) =>
+      Effect.acquireUseRelease(
+        withLock(Effect.sync(() => ensureRemote(remoteId).missing.slice())),
+        f,
+        (entries, exit) =>
+          withLock(Effect.sync(() => {
+            if (exit._tag === "Failure") return
+            const last = entries[entries.length - 1]
+            if (!last) return
+            const remote = ensureRemote(remoteId)
+            for (let i = remote.missing.length - 1; i >= 0; i--) {
+              const missing = remote.missing[i]
+              if (missing && missing.id === last.id) {
+                remote.missing = remote.missing.slice(i + 1)
+                break
+              }
+            }
+          }))
+      )
 
     return EventJournal.EventJournal.of({
       entries: withLock(Effect.sync(() => journal.slice())),
@@ -114,8 +166,9 @@ export const make = (options?: { readonly key?: string }) =>
             withLock(
               Effect.suspend(() => {
                 if (exit._tag === "Failure" || byId.has(entry.idString)) return Effect.void
-                journal.push(entry)
+                insertSorted(journal, entry)
                 byId.set(entry.idString, entry)
+                addConflictIndex(entry)
                 remotes.forEach((remote) => {
                   remote.missing.push(entry)
                 })
@@ -180,7 +233,6 @@ export const make = (options?: { readonly key?: string }) =>
               events
             })
 
-          let didInsert = false
           for (const [compacted, remoteEntries] of brackets) {
             if (remoteEntries.length > compacted.length) {
               const events = Array.from(
@@ -218,18 +270,9 @@ export const make = (options?: { readonly key?: string }) =>
               }
             }
             for (const entry of accepted) {
-              journal.push(entry)
+              insertSorted(journal, entry)
               byId.set(entry.idString, entry)
-              const key = conflictKey(entry)
-              const existing = conflictIndex.get(key)
-              if (existing) {
-                existing.push(entry)
-              } else {
-                conflictIndex.set(key, [entry])
-              }
-            }
-            if (accepted.length > 0) {
-              didInsert = true
+              addConflictIndex(entry)
             }
             for (const remoteEntry of remoteEntries) {
               if (remoteEntry.remoteSequence > remote.sequence) {
@@ -237,31 +280,9 @@ export const make = (options?: { readonly key?: string }) =>
               }
             }
           }
-
-          if (didInsert) {
-            journal.sort((a, b) => a.createdAtMillis - b.createdAtMillis)
-          }
           yield* persistEntries(kv, key, journal)
         })),
-      withRemoteUncommited: (remoteId, f) =>
-        Effect.acquireUseRelease(
-          withLock(Effect.sync(() => ensureRemote(remoteId).missing.slice())),
-          f,
-          (entries, exit) =>
-            withLock(Effect.sync(() => {
-              if (exit._tag === "Failure") return
-              const last = entries[entries.length - 1]
-              if (!last) return
-              const remote = ensureRemote(remoteId)
-              for (let i = remote.missing.length - 1; i >= 0; i--) {
-                const missing = remote.missing[i]
-                if (missing && missing.id === last.id) {
-                  remote.missing = remote.missing.slice(i + 1)
-                  break
-                }
-              }
-            }))
-        ),
+      withRemoteUncommited: withRemoteUncommitted,
       nextRemoteSequence: (remoteId) =>
         withLock(Effect.sync(() => ensureRemote(remoteId).sequence)),
       changes: PubSub.subscribe(pubsub),
@@ -282,3 +303,9 @@ export const make = (options?: { readonly key?: string }) =>
 
 export const layerKeyValueStore = (options?: { readonly key?: string }) =>
   Layer.scoped(EventJournal.EventJournal, make(options))
+
+export const withRemoteUncommitted = <A, E, R>(
+  journal: Context.Tag.Service<typeof EventJournal.EventJournal>,
+  remoteId: EventJournal.RemoteId,
+  f: (entries: ReadonlyArray<EventJournal.Entry>) => Effect.Effect<A, E, R>
+) => journal.withRemoteUncommited(remoteId, f)

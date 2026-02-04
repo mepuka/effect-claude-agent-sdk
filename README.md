@@ -60,6 +60,42 @@ const program = Effect.scoped(
 Effect.runPromise(program)
 ```
 
+## Cloudflare Remote Sync
+
+This repo includes a Cloudflare Worker + Durable Object sync server under `cloudflare/`.
+It exposes `/event-log` (and `/event-log/:tenant`) and supports optional auth via
+`SYNC_AUTH_TOKEN`.
+
+Setup:
+
+```bash
+cd cloudflare
+bun install
+# update wrangler.toml: name, account_id, compatibility_date
+bun run dev
+```
+
+Optional: bind a D1 database (`SYNC_DB`) and/or set `SYNC_AUTH_TOKEN` in Wrangler vars.
+
+Client wiring (one-liner):
+
+```ts
+import * as Effect from "effect/Effect"
+import { AgentRuntime, Sync } from "effect-claude-agent-sdk"
+
+const layer = Sync.withRemoteSync("wss://<your-worker>/event-log", {
+  tenant: "demo",
+  authToken: process.env.SYNC_AUTH_TOKEN,
+  syncInterval: "3 seconds"
+})
+
+const program = AgentRuntime.query("Hello").pipe(Effect.provide(layer))
+```
+
+Notes:
+- Cloudflare Durable Objects do **not** implement Ping/Pong or StopChanges.
+  The `cloudflare` provider disables ping by default.
+
 ## Core Concepts
 
 ### AgentSdk

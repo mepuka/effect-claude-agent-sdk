@@ -14,6 +14,10 @@ export type EventLogRemoteServerOptions = {
   readonly storage?: Layer.Layer<EventLogServer.Storage>
 }
 
+/**
+ * Build a WebSocket URL from a bound server address.
+ * Throws if the address is not a TCP address. Prefer `toWebSocketUrlEffect`.
+ */
 export const toWebSocketUrl = (
   address: HttpServer.Address,
   options?: {

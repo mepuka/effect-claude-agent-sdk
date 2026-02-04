@@ -417,6 +417,9 @@ export class AgentRuntime extends Effect.Service<AgentRuntime>()(
         ...(options.syncArtifacts !== undefined
           ? { syncArtifacts: options.syncArtifacts }
           : {}),
+        ...(options.exposeSync !== undefined
+          ? { exposeSync: options.exposeSync }
+          : {}),
         ...(options.conflictPolicy !== undefined
           ? { conflictPolicy: options.conflictPolicy }
           : {})
@@ -430,11 +433,15 @@ export class AgentRuntime extends Effect.Service<AgentRuntime>()(
       sessionIndex: options.layers?.sessionIndex ?? syncLayers.sessionIndex,
       storageConfig: options.layers?.storageConfig ?? StorageConfig.layer
     }
-    return AgentRuntime.layerWithPersistence({
+    const runtimeLayer = AgentRuntime.layerWithPersistence({
       layers,
       ...(options.history !== undefined ? { history: options.history } : {}),
       ...(options.audit !== undefined ? { audit: options.audit } : {})
     })
+
+    return syncLayers.sync
+      ? Layer.merge(runtimeLayer, syncLayers.sync)
+      : runtimeLayer
   }
 
 }
