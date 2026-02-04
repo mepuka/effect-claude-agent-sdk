@@ -13,7 +13,16 @@ Scope: Critical DX/UX issues from GitHub (P0/P1 + bug)
   - #31 Tool.define / Tool.fn / Toolkit.fromHandlers
 - In progress:
   - #23 one-liner remote sync DX (Sync.withRemoteSync helper + conflict policy wiring)
-  - #24 targeted sync module refactors (Clock + conflict policy safety)
+  - #24 targeted sync module refactors (EventLogRemoteServer, SyncService mailbox, compaction, conflict indexing, audit logging)
+
+## Recent Progress (2026-02-04)
+- Added `Sync.withRemoteSync(url, options)` and conflict policy plumbing.
+- Sync module cleanup:
+  - EventLogRemoteServer: effectful URL builder + port 0 test server (TOCTOU fix).
+  - SyncService: mailbox wrapping uses `Mailbox.fromStream` to preserve semantics.
+  - EventJournalKeyValueStore: indexed conflict lookup + single sort per batch.
+  - Compaction: `compactEntries` uses last bracket; `bySize` strictly respects maxBytes.
+  - SyncAuditEventStore: audit failures now logged instead of swallowed.
 
 ## Goals
 - Ship a fail-fast, actionable error path for missing credentials (API key + session token).
