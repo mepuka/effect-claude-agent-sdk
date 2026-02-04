@@ -68,6 +68,17 @@ export const make = (options?: { readonly key?: string }) =>
     const byId = new Map(journal.map((entry) => [entry.idString, entry]))
     const remotes = new Map<string, { sequence: number; missing: Array<EventJournal.Entry> }>()
     const journalSemaphore = yield* Effect.makeSemaphore(1)
+    const conflictKey = (entry: EventJournal.Entry) => `${entry.event}\u0000${entry.primaryKey}`
+    const conflictIndex = new Map<string, Array<EventJournal.Entry>>()
+    for (const entry of journal) {
+      const key = conflictKey(entry)
+      const existing = conflictIndex.get(key)
+      if (existing) {
+        existing.push(entry)
+      } else {
+        conflictIndex.set(key, [entry])
+      }
+    }
 
     const withLock = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       journalSemaphore.withPermits(1)(effect)
@@ -188,18 +199,14 @@ export const make = (options?: { readonly key?: string }) =>
               yield* emitCompaction(remoteEntries.length, compacted.length, events)
             }
             const accepted: Array<EventJournal.Entry> = []
+            const acceptedIndex = new Map<string, Array<EventJournal.Entry>>()
             for (const originEntry of compacted) {
               const conflicts: Array<EventJournal.Entry> = []
-              for (const check of journal) {
-                if (check.event === originEntry.event && check.primaryKey === originEntry.primaryKey) {
-                  conflicts.push(check)
-                }
-              }
-              for (const check of accepted) {
-                if (check.event === originEntry.event && check.primaryKey === originEntry.primaryKey) {
-                  conflicts.push(check)
-                }
-              }
+              const key = conflictKey(originEntry)
+              const existing = conflictIndex.get(key)
+              if (existing) conflicts.push(...existing)
+              const local = acceptedIndex.get(key)
+              if (local) conflicts.push(...local)
               let resolution = resolveDefaultConflict(originEntry, conflicts)
               if (conflicts.length > 0) {
                 resolution = yield* resolveConflict(originEntry, conflicts)
@@ -210,12 +217,26 @@ export const make = (options?: { readonly key?: string }) =>
                 if (!byId.has(resolvedEntry.idString)) {
                   yield* options.effect({ entry: resolvedEntry, conflicts })
                   accepted.push(resolvedEntry)
+                  const acceptedKey = conflictKey(resolvedEntry)
+                  const acceptedEntries = acceptedIndex.get(acceptedKey)
+                  if (acceptedEntries) {
+                    acceptedEntries.push(resolvedEntry)
+                  } else {
+                    acceptedIndex.set(acceptedKey, [resolvedEntry])
+                  }
                 }
               }
             }
             for (const entry of accepted) {
               journal.push(entry)
               byId.set(entry.idString, entry)
+              const key = conflictKey(entry)
+              const existing = conflictIndex.get(key)
+              if (existing) {
+                existing.push(entry)
+              } else {
+                conflictIndex.set(key, [entry])
+              }
             }
             for (const remoteEntry of remoteEntries) {
               if (remoteEntry.remoteSequence > remote.sequence) {

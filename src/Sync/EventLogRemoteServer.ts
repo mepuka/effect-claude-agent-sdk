@@ -99,8 +99,10 @@ const pickTestPort = (hostname?: string) =>
     tryListen(0)
   })
 
-export const layerBunWebSocket = (options: EventLogRemoteServerOptions = {}) => {
-  const port = options.port ?? 8787
+const buildBunWebSocketLayer = (
+  options: EventLogRemoteServerOptions,
+  port: number
+) => {
   const path = (options.path ?? "/event-log") as HttpRouter.PathInput
   const storageLayer = options.storage ?? EventLogServer.layerStorageMemory
 
@@ -134,45 +136,17 @@ export const layerBunWebSocket = (options: EventLogRemoteServerOptions = {}) => 
   )
 }
 
+export const layerBunWebSocket = (options: EventLogRemoteServerOptions = {}) =>
+  buildBunWebSocketLayer(options, options.port ?? 8787)
+
 export const layerBunWebSocketTest = (options: EventLogRemoteServerOptions = {}) => {
-  const path = (options.path ?? "/event-log") as HttpRouter.PathInput
-  const storageLayer = options.storage ?? EventLogServer.layerStorageMemory
-
-  const handler = Effect.flatten(EventLogServer.makeHandlerHttp)
-  const route = HttpRouter.makeRoute("GET", path, handler)
-  const router = HttpRouter.empty.pipe(HttpRouter.append(route))
-  const serveLayer = Layer.unwrapEffect(
-    Effect.map(HttpRouter.toHttpApp(router), (app) => HttpServer.serve(app))
-  )
-
-  const serviceLayer = Layer.effect(
-    EventLogRemoteServer,
-    Effect.map(HttpServer.HttpServer, (server) =>
-      EventLogRemoteServer.of({
-        address: server.address,
-        url: toWebSocketUrl(
-          server.address,
-          {
-            path,
-            ...(options.hostname !== undefined ? { hostname: options.hostname } : {}),
-            ...(options.scheme !== undefined ? { scheme: options.scheme } : {})
-          }
-        )
-      })
-    )
-  )
-
-  const buildLayer = (port: number) =>
-    Layer.merge(serveLayer, serviceLayer).pipe(
-      Layer.provide(storageLayer),
-      Layer.provide(BunHttpServer.layer({ port, hostname: options.hostname }))
-    )
-
   if (options.port !== undefined) {
-    return buildLayer(options.port)
+    return buildBunWebSocketLayer(options, options.port)
   }
 
   return Layer.unwrapEffect(
-    Effect.map(pickTestPort(options.hostname), buildLayer)
+    Effect.map(pickTestPort(options.hostname), (port) =>
+      buildBunWebSocketLayer(options, port)
+    )
   )
 }

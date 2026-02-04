@@ -67,7 +67,7 @@ export const Compaction = {
       for (let i = entries.length - 1; i >= 0; i -= 1) {
         const entry = entries[i]!
         const size = estimateEntrySize(entry.entry)
-        if (kept.length > 0 && total + size > maxBytes) break
+        if (total + size > maxBytes) break
         total += size
         kept.push(entry)
       }
