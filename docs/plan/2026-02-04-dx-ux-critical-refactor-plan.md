@@ -10,11 +10,10 @@ Scope: Critical DX/UX issues from GitHub (P0/P1 + bug)
   - #26 quick-start `run` / `streamText`
   - #34 ConflictPolicy wired into sync flow
   - #29 hook constructors + builder
-- Implemented locally, needs verification + issue closure:
   - #31 Tool.define / Tool.fn / Toolkit.fromHandlers
-- Not started:
-  - #23 one-liner remote sync DX (decision pending)
-  - #24 targeted sync module refactors
+- In progress:
+  - #23 one-liner remote sync DX (Sync.withRemoteSync helper + conflict policy wiring)
+  - #24 targeted sync module refactors (Clock + conflict policy safety)
 
 ## Goals
 - Ship a fail-fast, actionable error path for missing credentials (API key + session token).

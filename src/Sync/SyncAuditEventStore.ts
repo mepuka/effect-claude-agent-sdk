@@ -1,3 +1,4 @@
+import * as Clock from "effect/Clock"
 import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
 import { AuditEventStore } from "../Storage/AuditEventStore.js"
@@ -32,22 +33,24 @@ export const layerAuditEventStore = Layer.effect(
       }).pipe(Effect.catchAll(() => Effect.void))
     }
 
-    const compaction = (input: SyncCompactionAudit) => {
-      const basePayload = {
-        remoteId: input.remoteId,
-        before: input.before,
-        after: input.after,
-        timestamp: Date.now()
-      }
-      const payload =
-        input.events.length === 0
-          ? basePayload
-          : { ...basePayload, events: input.events }
-      return store.write({
-        event: "sync_compaction",
-        payload
-      }).pipe(Effect.catchAll(() => Effect.void))
-    }
+    const compaction = (input: SyncCompactionAudit) =>
+      Effect.gen(function*() {
+        const timestamp = yield* Clock.currentTimeMillis
+        const basePayload = {
+          remoteId: input.remoteId,
+          before: input.before,
+          after: input.after,
+          timestamp
+        }
+        const payload =
+          input.events.length === 0
+            ? basePayload
+            : { ...basePayload, events: input.events }
+        return yield* store.write({
+          event: "sync_compaction",
+          payload
+        }).pipe(Effect.catchAll(() => Effect.void))
+      })
 
     return SyncAudit.of({ conflict, compaction })
   })

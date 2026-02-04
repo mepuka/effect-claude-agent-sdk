@@ -431,6 +431,9 @@ export class AgentRuntime extends Context.Tag("@effect/claude-agent-sdk/AgentRun
           : {}),
         ...(options.syncArtifacts !== undefined
           ? { syncArtifacts: options.syncArtifacts }
+          : {}),
+        ...(options.conflictPolicy !== undefined
+          ? { conflictPolicy: options.conflictPolicy }
           : {})
       }
     )

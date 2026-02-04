@@ -6,6 +6,7 @@ import { AuditEventStore } from "./AuditEventStore.js"
 import { ChatHistoryStore } from "./ChatHistoryStore.js"
 import { SessionIndexStore } from "./SessionIndexStore.js"
 import { defaultStorageDirectory } from "./defaults.js"
+import type { ConflictPolicy } from "../Sync/ConflictPolicy.js"
 
 export type StorageLayerOptions = {
   readonly directory?: string
@@ -23,6 +24,7 @@ export type StorageSyncLayerOptions = StorageLayerOptions & {
   readonly disablePing?: boolean
   readonly syncChatHistory?: boolean
   readonly syncArtifacts?: boolean
+  readonly conflictPolicy?: Layer.Layer<ConflictPolicy>
 }
 
 const resolveDirectory = (directory: string | undefined) =>
@@ -157,6 +159,7 @@ export const layersFileSystemBunJournaledWithSyncWebSocket = (
   const disablePing = options?.disablePing
   const syncChatHistory = options?.syncChatHistory ?? true
   const syncArtifacts = options?.syncArtifacts ?? false
+  const conflictPolicy = options?.conflictPolicy
   const kvsLayer = BunKeyValueStore.layerFileSystem(
     directory ?? defaultStorageDirectory
   )
@@ -169,10 +172,13 @@ export const layersFileSystemBunJournaledWithSyncWebSocket = (
     chatHistory: syncChatHistory
       ? ChatHistoryStore.layerJournaledWithSyncWebSocket(
           url,
-          disablePing !== undefined || syncInterval !== undefined
+          disablePing !== undefined ||
+          syncInterval !== undefined ||
+          conflictPolicy !== undefined
             ? {
                 ...(disablePing !== undefined ? { disablePing } : {}),
-                ...(syncInterval !== undefined ? { syncInterval } : {})
+                ...(syncInterval !== undefined ? { syncInterval } : {}),
+                ...(conflictPolicy !== undefined ? { conflictPolicy } : {})
               }
             : undefined
         ).pipe(Layer.provide(kvsLayer))
@@ -180,10 +186,13 @@ export const layersFileSystemBunJournaledWithSyncWebSocket = (
     artifacts: syncArtifacts
       ? ArtifactStore.layerJournaledWithSyncWebSocket(
           url,
-          disablePing !== undefined || syncInterval !== undefined
+          disablePing !== undefined ||
+          syncInterval !== undefined ||
+          conflictPolicy !== undefined
             ? {
                 ...(disablePing !== undefined ? { disablePing } : {}),
-                ...(syncInterval !== undefined ? { syncInterval } : {})
+                ...(syncInterval !== undefined ? { syncInterval } : {}),
+                ...(conflictPolicy !== undefined ? { conflictPolicy } : {})
               }
             : undefined
         ).pipe(Layer.provide(kvsLayer))

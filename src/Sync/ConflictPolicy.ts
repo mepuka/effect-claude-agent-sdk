@@ -24,14 +24,26 @@ const reject = (reason?: string): ConflictResolution => ({
 })
 
 const pickLatest = (entries: ReadonlyArray<EventJournal.Entry>) =>
-  entries.reduce((latest, next) =>
-    next.createdAtMillis >= latest.createdAtMillis ? next : latest
-  )
+  entries.length === 0
+    ? (() => {
+        throw new Error("ConflictPolicy.pickLatest requires at least one entry.")
+      })()
+    : entries.slice(1).reduce(
+      (latest, next) =>
+        next.createdAtMillis >= latest.createdAtMillis ? next : latest,
+      entries[0]!
+    )
 
 const pickEarliest = (entries: ReadonlyArray<EventJournal.Entry>) =>
-  entries.reduce((earliest, next) =>
-    next.createdAtMillis <= earliest.createdAtMillis ? next : earliest
-  )
+  entries.length === 0
+    ? (() => {
+        throw new Error("ConflictPolicy.pickEarliest requires at least one entry.")
+      })()
+    : entries.slice(1).reduce(
+      (earliest, next) =>
+        next.createdAtMillis <= earliest.createdAtMillis ? next : earliest,
+      entries[0]!
+    )
 
 export class ConflictPolicy extends Context.Tag("@effect/claude-agent-sdk/ConflictPolicy")<
   ConflictPolicy,
