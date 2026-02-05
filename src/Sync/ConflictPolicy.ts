@@ -23,27 +23,29 @@ const reject = (reason?: string): ConflictResolution => ({
   ...(reason ? { reason } : {})
 })
 
-const pickLatest = (entries: ReadonlyArray<EventJournal.Entry>) =>
-  entries.length === 0
-    ? (() => {
-        throw new Error("ConflictPolicy.pickLatest requires at least one entry.")
-      })()
-    : entries.slice(1).reduce(
-      (latest, next) =>
-        next.createdAtMillis >= latest.createdAtMillis ? next : latest,
-      entries[0]!
-    )
+const pickLatest = (entries: ReadonlyArray<EventJournal.Entry>) => {
+  if (entries.length === 0) return undefined
+  let latest = entries[0]!
+  for (let i = 1; i < entries.length; i++) {
+    const next = entries[i]!
+    if (next.createdAtMillis >= latest.createdAtMillis) {
+      latest = next
+    }
+  }
+  return latest
+}
 
-const pickEarliest = (entries: ReadonlyArray<EventJournal.Entry>) =>
-  entries.length === 0
-    ? (() => {
-        throw new Error("ConflictPolicy.pickEarliest requires at least one entry.")
-      })()
-    : entries.slice(1).reduce(
-      (earliest, next) =>
-        next.createdAtMillis <= earliest.createdAtMillis ? next : earliest,
-      entries[0]!
-    )
+const pickEarliest = (entries: ReadonlyArray<EventJournal.Entry>) => {
+  if (entries.length === 0) return undefined
+  let earliest = entries[0]!
+  for (let i = 1; i < entries.length; i++) {
+    const next = entries[i]!
+    if (next.createdAtMillis <= earliest.createdAtMillis) {
+      earliest = next
+    }
+  }
+  return earliest
+}
 
 export type ConflictPolicyService = {
   readonly resolve: (options: {
@@ -56,7 +58,7 @@ const defaultConflictPolicy: ConflictPolicyService = {
   resolve: ({ entry, conflicts }) =>
     Effect.succeed(
       accept(
-        pickLatest([entry, ...conflicts])
+        pickLatest([entry, ...conflicts]) ?? entry
       )
     )
 }
@@ -74,15 +76,15 @@ export class ConflictPolicy extends Context.Reference<ConflictPolicy>()(
 
   static readonly layerFirstWriteWins = Layer.succeed(
     ConflictPolicy,
-    ConflictPolicy.of({
-      resolve: ({ entry, conflicts }) =>
-        Effect.succeed(
-          accept(
-            pickEarliest([entry, ...conflicts])
+      ConflictPolicy.of({
+        resolve: ({ entry, conflicts }) =>
+          Effect.succeed(
+            accept(
+              pickEarliest([entry, ...conflicts]) ?? entry
+            )
           )
-        )
-    })
-  )
+      })
+    )
 
   static readonly layerReject = (reason?: string) =>
     Layer.succeed(

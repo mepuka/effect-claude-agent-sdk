@@ -18,6 +18,8 @@ import * as Scope from "effect/Scope"
 import * as Stream from "effect/Stream"
 import * as SubscriptionRef from "effect/SubscriptionRef"
 import { StorageConfig } from "../Storage/StorageConfig.js"
+import { EventLogRemoteServer, layerBunWebSocketTest } from "./EventLogRemoteServer.js"
+import type { EventLogRemoteServerError } from "./EventLogRemoteServer.js"
 
 export type RemoteKind = "remoteId" | "url"
 
@@ -80,7 +82,35 @@ export class SyncService extends Context.Tag("@effect/claude-agent-sdk/SyncServi
 >() {
   static readonly layer = Layer.scoped(SyncService, make())
 
-  static readonly layerWebSocket = (
+  static readonly layerSocket: (
+    host: string,
+    port: number,
+    options?: SyncServiceWebSocketOptions
+  ) => Layer.Layer<SyncService, Socket.SocketError, EventLogModule.EventLog> = (
+    host: string,
+    port: number,
+    options?: SyncServiceWebSocketOptions
+  ) => {
+    const socketLayer = BunSocket.layerNet({ host, port })
+    let layer = Layer.scoped(
+      SyncService,
+      makeWithSocket(`tcp://${host}:${port}`, options)
+    ).pipe(
+      Layer.provide(socketLayer),
+      Layer.provide(EventLogEncryption.layerSubtle)
+    )
+    if (options?.syncInterval !== undefined) {
+      layer = layer.pipe(
+        Layer.provide(SyncConfig.layer({ syncInterval: options.syncInterval }))
+      )
+    }
+    return layer
+  }
+
+  static readonly layerWebSocket: (
+    url: string,
+    options?: SyncServiceWebSocketOptions
+  ) => Layer.Layer<SyncService, never, EventLogModule.EventLog> = (
     url: string,
     options?: SyncServiceWebSocketOptions
   ) => {
@@ -95,6 +125,27 @@ export class SyncService extends Context.Tag("@effect/claude-agent-sdk/SyncServi
     }
     return layer
   }
+
+  static readonly layerMemory: (
+    options?: SyncServiceWebSocketOptions
+  ) => Layer.Layer<SyncService, unknown, EventLogModule.EventLog> = (options) =>
+    Layer.unwrapEffect(
+      Effect.gen(function*() {
+        const server = yield* EventLogRemoteServer
+        let layer = Layer.scoped(SyncService, makeWithWebSocket(server.url, options)).pipe(
+          Layer.provide(BunSocket.layerWebSocketConstructor),
+          Layer.provide(EventLogEncryption.layerSubtle)
+        )
+        if (options?.syncInterval !== undefined) {
+          layer = layer.pipe(
+            Layer.provide(SyncConfig.layer({ syncInterval: options.syncInterval }))
+          )
+        }
+        return layer
+      })
+    ).pipe(
+      Layer.provide(layerBunWebSocketTest())
+    )
 }
 
 function makeWithWebSocket(
@@ -102,18 +153,33 @@ function makeWithWebSocket(
   options?: SyncServiceWebSocketOptions
 ) {
   return Effect.gen(function*() {
-    const service = yield* make()
+    const { service } = yield* makeService()
     yield* service.connectWebSocket(url, options)
     return service
   })
 }
 
+function makeWithSocket(key: string, options?: SyncServiceWebSocketOptions) {
+  return Effect.gen(function*() {
+    const { service, connectSocket } = yield* makeService()
+    yield* connectSocket(key, options)
+    return service
+  })
+}
+
 function make() {
+  return Effect.map(makeService(), ({ service }) => service)
+}
+
+function makeService() {
   return Effect.gen(function*() {
     const scope = yield* Effect.scope
     const log = yield* EventLogModule.EventLog
     const encryption = yield* EventLogEncryption.EventLogEncryption
-    const webSocketConstructor = yield* Socket.WebSocketConstructor
+    const webSocketConstructorOption = yield* Effect.serviceOption(
+      Socket.WebSocketConstructor
+    )
+    const socketOption = yield* Effect.serviceOption(Socket.Socket)
     const fibers = yield* FiberMap.make<string>()
     const syncNowSemaphore = yield* Effect.makeSemaphore(1)
     const statusRef = yield* SubscriptionRef.make<Map<string, RemoteStatus>>(new Map())
@@ -142,14 +208,31 @@ function make() {
       ...(input.lastError !== undefined ? { lastError: input.lastError } : {})
     })
 
-    const withUrl = <T extends object>(input: T, url?: string) =>
-      url !== undefined ? { ...input, url } : input
-
-    const withLastSyncAt = <T extends object>(input: T, lastSyncAt?: number) =>
-      lastSyncAt !== undefined ? { ...input, lastSyncAt } : input
-
-    const withLastError = <T extends object>(input: T, lastError?: string) =>
-      lastError !== undefined ? { ...input, lastError } : input
+    const mergeStatus = (
+      previous: RemoteStatus | undefined,
+      next: {
+        readonly key: string
+        readonly kind?: RemoteKind
+        readonly remoteId?: string
+        readonly connected?: boolean
+        readonly url?: string
+        readonly lastSyncAt?: number
+        readonly lastError?: string
+      }
+    ) => {
+      const url = next.url ?? previous?.url
+      const lastSyncAt = next.lastSyncAt ?? previous?.lastSyncAt
+      const lastError = next.lastError ?? previous?.lastError
+      return buildStatus({
+        key: next.key,
+        kind: next.kind ?? previous?.kind ?? "remoteId",
+        remoteId: next.remoteId ?? previous?.remoteId ?? next.key,
+        connected: next.connected ?? previous?.connected ?? false,
+        ...(url !== undefined ? { url } : {}),
+        ...(lastSyncAt !== undefined ? { lastSyncAt } : {}),
+        ...(lastError !== undefined ? { lastError } : {})
+      })
+    }
 
     const markConnected = (key: string, kind: RemoteKind, url?: string) =>
       Effect.gen(function*() {
@@ -157,15 +240,17 @@ function make() {
         yield* SubscriptionRef.update(statusRef, (map) => {
           const next = new Map(map)
           const previous = next.get(key)
-          next.set(key, {
-            ...buildStatus(withUrl({
+          next.set(
+            key,
+            mergeStatus(previous, {
               key,
               kind,
               remoteId: previous?.remoteId ?? key,
               connected: true,
-              lastSyncAt: now
-            }, url))
-          })
+              lastSyncAt: now,
+              ...(url !== undefined ? { url } : {})
+            })
+          )
           return next
         })
       })
@@ -174,27 +259,14 @@ function make() {
       SubscriptionRef.update(statusRef, (map) => {
         const next = new Map(map)
         const previous = next.get(key)
-        const kind = previous?.kind ?? "remoteId"
-        const url = previous?.url
-        const lastSyncAt = previous?.lastSyncAt
-        const lastError = error ?? previous?.lastError
-        const baseStatusInput = withLastError(
-          withLastSyncAt(
-            {
-              key,
-              kind,
-              remoteId: previous?.remoteId ?? key,
-              connected: false
-            },
-            lastSyncAt
-          ),
-          lastError
+        next.set(
+          key,
+          mergeStatus(previous, {
+            key,
+            connected: false,
+            ...(error !== undefined ? { lastError: error } : {})
+          })
         )
-        const status: RemoteStatus = buildStatus(withUrl(baseStatusInput, url))
-        next.set(key, {
-          ...status,
-          connected: false
-        })
         return next
       })
 
@@ -205,15 +277,14 @@ function make() {
           const next = new Map(map)
           const previous = next.get(key)
           if (!previous) return next
-          next.set(key, {
-            ...buildStatus(withUrl({
+          next.set(
+            key,
+            mergeStatus(previous, {
               key,
-              kind: previous.kind,
-              remoteId: previous.remoteId,
               connected: true,
               lastSyncAt: now
-            }, previous.url))
-          })
+            })
+          )
           return next
         })
       })
@@ -222,12 +293,16 @@ function make() {
       SubscriptionRef.update(statusRef, (map) => {
         if (map.has(key)) return map
         const next = new Map(map)
-        next.set(key, buildStatus(withUrl({
+        next.set(
           key,
-          kind,
-          remoteId: key,
-          connected: false
-        }, url)))
+          buildStatus({
+            key,
+            kind,
+            remoteId: key,
+            connected: false,
+            ...(url !== undefined ? { url } : {})
+          })
+        )
         return next
       })
 
@@ -235,23 +310,14 @@ function make() {
       SubscriptionRef.update(statusRef, (map) => {
         const next = new Map(map)
         const previous = next.get(key)
-        const kind = previous?.kind ?? "remoteId"
-        const url = previous?.url
-        const baseStatusInput = withLastError(
-          withLastSyncAt(
-            {
-              key,
-              kind,
-              remoteId,
-              connected: previous?.connected ?? false
-            },
-            previous?.lastSyncAt
-          ),
-          previous?.lastError
+        next.set(
+          key,
+          mergeStatus(previous, {
+            key,
+            remoteId,
+            connected: previous?.connected ?? false
+          })
         )
-        next.set(key, {
-          ...buildStatus(withUrl(baseStatusInput, url))
-        })
         return next
       })
 
@@ -344,6 +410,25 @@ function make() {
         }
       })
 
+    const connectSocket = Effect.fn("SyncService.connectSocket")(function*(
+      key: string,
+      options?: SyncServiceWebSocketOptions
+    ) {
+      const socket = yield* Option.match(socketOption, {
+        onNone: () =>
+          Effect.dieMessage(
+            "SyncService.connectSocket requires Socket.Socket. Provide BunSocket.layerNet."
+          ),
+        onSome: (service) => Effect.succeed(service)
+      })
+      const effect = EventLogRemote.fromSocket(options).pipe(
+        Effect.provideService(EventLogModule.EventLog, trackedEventLog(key)),
+        Effect.provideService(EventLogEncryption.EventLogEncryption, encryption),
+        Effect.provideService(Socket.Socket, socket)
+      )
+      yield* connectInternal(key, "url", effect, key)
+    })
+
     const connect = Effect.fn("SyncService.connect")(function*(
       remote: EventLogRemote.EventLogRemote
     ) {
@@ -363,6 +448,13 @@ function make() {
       url: string,
       options?: SyncServiceWebSocketOptions
     ) {
+      const webSocketConstructor = yield* Option.match(webSocketConstructorOption, {
+        onNone: () =>
+          Effect.dieMessage(
+            "SyncService.connectWebSocket requires Socket.WebSocketConstructor. Provide BunSocket.layerWebSocketConstructor."
+          ),
+        onSome: (constructor) => Effect.succeed(constructor)
+      })
       const effect = EventLogRemote.fromWebSocket(url, options).pipe(
         Effect.provideService(EventLogModule.EventLog, trackedEventLog(url)),
         Effect.provideService(EventLogEncryption.EventLogEncryption, encryption),
@@ -430,7 +522,7 @@ function make() {
       Effect.forkScoped
     )
 
-    return SyncService.of({
+    const service = SyncService.of({
       connect,
       connectWebSocket,
       disconnect,
@@ -440,5 +532,7 @@ function make() {
       status,
       statusStream
     })
+
+    return { service, connectSocket }
   })
 }

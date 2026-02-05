@@ -69,13 +69,13 @@ It exposes `/event-log` (and `/event-log/:tenant`) and supports optional auth vi
 Setup:
 
 ```bash
-cd cloudflare
-bun install
-# update wrangler.toml: name, account_id, compatibility_date
-bun run dev
+bun install --cwd cloudflare
+# update cloudflare/wrangler.toml: name, account_id, compatibility_date
+bun run sync:dev
 ```
 
 Optional: bind a D1 database (`SYNC_DB`) and/or set `SYNC_AUTH_TOKEN` in Wrangler vars.
+Deploy with `bun run sync:deploy`.
 
 Client wiring (one-liner):
 

@@ -12,6 +12,13 @@ EventLogRemote protocol for syncing SDK replicas. The Durable Object uses Effect
 3. Bind the Durable Object:
    - `SYNC_DO` → `SyncDurableObject`
 
+From the repo root:
+
+```bash
+bun install --cwd cloudflare
+bun run sync:dev
+```
+
 Optional: bind a D1 database as `SYNC_DB` to use D1 storage instead of DO SQLite.
 
 ## Storage Mode

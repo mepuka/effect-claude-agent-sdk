@@ -8,6 +8,10 @@ import { runEffectLive } from "./effect-test.js"
 import { Storage, Sync } from "../src/index.js"
 import { makeUserMessage } from "../src/internal/messages.js"
 
+const allowServe =
+  Bun.env.SYNC_TEST_ALLOW_SERVE === "1" || Bun.env.SYNC_TEST_ALLOW_SERVE === "true"
+const maybeTest = allowServe ? test : test.skip
+
 const debugEnabled =
   Bun.env.SYNC_TEST_DEBUG === "1" || Bun.env.SYNC_TEST_DEBUG === "true"
 const debug = (...args: Array<unknown>) => {
@@ -83,7 +87,7 @@ const makeReplicaLayer = (
   )
 }
 
-test(
+maybeTest(
   "Remote sync converges and resumes after reconnect",
   async () => {
   if (!(await canListen())) return

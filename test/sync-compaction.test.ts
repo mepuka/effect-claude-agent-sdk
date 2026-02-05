@@ -32,7 +32,7 @@ const entrySize = (entry: EventJournal.Entry) =>
 
 const extractEntries = (brackets: ReadonlyArray<Sync.CompactionBracket>) => {
   const first = brackets[0]
-  return first ? first[1] : []
+  return first ? first[0] : []
 }
 
 test("Compaction.byAge keeps entries within max age", async () => {
@@ -49,7 +49,7 @@ test("Compaction.byAge keeps entries within max age", async () => {
   })
 
   const kept = await runEffect(program)
-  expect(kept.map((entry) => entry.entry.createdAtMillis)).toEqual([6000, 9000])
+  expect(kept.map((entry) => entry.createdAtMillis)).toEqual([6000, 9000])
 })
 
 test("Compaction.byCount keeps the latest entries", async () => {
@@ -67,7 +67,7 @@ test("Compaction.byCount keeps the latest entries", async () => {
     )
   )
 
-  expect(kept.map((entry) => entry.entry.createdAtMillis)).toEqual([4000, 5000])
+  expect(kept.map((entry) => entry.createdAtMillis)).toEqual([4000, 5000])
 })
 
 test("Compaction.bySize trims to the most recent entries within the limit", async () => {
@@ -87,7 +87,7 @@ test("Compaction.bySize trims to the most recent entries within the limit", asyn
     )
   )
 
-  expect(kept.map((entry) => entry.entry.createdAtMillis)).toEqual([3000])
+  expect(kept.map((entry) => entry.createdAtMillis)).toEqual([3000])
 })
 
 test("Compaction.composite applies strategies in order", async () => {
@@ -112,5 +112,5 @@ test("Compaction.composite applies strategies in order", async () => {
     )
   )
 
-  expect(kept.map((entry) => entry.entry.createdAtMillis)).toEqual([4000, 5000])
+  expect(kept.map((entry) => entry.createdAtMillis)).toEqual([4000, 5000])
 })

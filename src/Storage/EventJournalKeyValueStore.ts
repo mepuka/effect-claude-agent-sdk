@@ -149,7 +149,7 @@ export const make = (options?: { readonly key?: string }) =>
           }))
       )
 
-    return EventJournal.EventJournal.of({
+    const service = EventJournal.EventJournal.of({
       entries: withLock(Effect.sync(() => journal.slice())),
       write({ effect, event, payload, primaryKey }) {
         return Effect.acquireUseRelease(
@@ -282,6 +282,7 @@ export const make = (options?: { readonly key?: string }) =>
           }
           yield* persistEntries(kv, key, journal)
         })),
+      // Deprecated misspelling retained for compatibility.
       withRemoteUncommited: withRemoteUncommitted,
       nextRemoteSequence: (remoteId) =>
         withLock(Effect.sync(() => ensureRemote(remoteId).sequence)),
@@ -299,6 +300,7 @@ export const make = (options?: { readonly key?: string }) =>
         )
       )
     })
+    return Object.assign(service, { withRemoteUncommitted })
   })
 
 export const layerKeyValueStore = (options?: { readonly key?: string }) =>
@@ -308,4 +310,9 @@ export const withRemoteUncommitted = <A, E, R>(
   journal: Context.Tag.Service<typeof EventJournal.EventJournal>,
   remoteId: EventJournal.RemoteId,
   f: (entries: ReadonlyArray<EventJournal.Entry>) => Effect.Effect<A, E, R>
-) => journal.withRemoteUncommited(remoteId, f)
+) => {
+  const anyJournal = journal as typeof journal & {
+    readonly withRemoteUncommitted?: typeof journal.withRemoteUncommited
+  }
+  return (anyJournal.withRemoteUncommitted ?? journal.withRemoteUncommited)(remoteId, f)
+}

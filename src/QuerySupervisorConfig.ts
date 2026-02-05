@@ -34,6 +34,19 @@ const defaultSettings: QuerySupervisorSettings = {
   tracingEnabled: false
 }
 
+const resolveSettings = (overrides?: Partial<QuerySupervisorSettings>): QuerySupervisorSettings => {
+  const merged = {
+    ...defaultSettings,
+    ...(overrides ?? {})
+  }
+  return {
+    ...merged,
+    concurrencyLimit: Math.max(1, merged.concurrencyLimit),
+    pendingQueueCapacity: Math.max(0, merged.pendingQueueCapacity),
+    eventBufferCapacity: Math.max(1, merged.eventBufferCapacity)
+  }
+}
+
 const makeQuerySupervisorConfig = Effect.gen(function*() {
   const concurrencyLimit = yield* Config.option(Config.integer("CONCURRENCY_LIMIT"))
   const pendingQueueCapacity = yield* Config.option(Config.integer("PENDING_QUEUE_CAPACITY"))
@@ -95,4 +108,15 @@ export class QuerySupervisorConfig extends Effect.Service<QuerySupervisorConfig>
    * Default configuration layer for QuerySupervisor.
    */
   static readonly layer = QuerySupervisorConfig.Default
+
+  /**
+   * Build QuerySupervisorConfig with explicit overrides applied to defaults.
+   */
+  static readonly layerWith = (overrides?: Partial<QuerySupervisorSettings>) =>
+    Layer.succeed(
+      QuerySupervisorConfig,
+      QuerySupervisorConfig.make({
+        settings: resolveSettings(overrides)
+      })
+    )
 }

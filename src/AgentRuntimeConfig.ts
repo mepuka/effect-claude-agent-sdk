@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
 import * as Option from "effect/Option"
 import type { Options } from "./Schema/Options.js"
+import { mergeOptions } from "./internal/options.js"
 import { layerConfigFromEnv } from "./internal/config.js"
 
 export type AgentRuntimeSettings = {
@@ -22,6 +23,18 @@ const defaultSettings: AgentRuntimeSettings = {
   firstMessageTimeout: undefined,
   retryMaxRetries: 0,
   retryBaseDelay: Duration.seconds(1)
+}
+
+const resolveSettings = (overrides?: Partial<AgentRuntimeSettings>): AgentRuntimeSettings => {
+  if (!overrides) return defaultSettings
+  const defaultOptions = overrides.defaultOptions
+    ? mergeOptions(defaultSettings.defaultOptions, overrides.defaultOptions)
+    : defaultSettings.defaultOptions
+  return {
+    ...defaultSettings,
+    ...overrides,
+    defaultOptions
+  }
 }
 
 const makeAgentRuntimeConfig = Effect.gen(function*() {
@@ -63,4 +76,15 @@ export class AgentRuntimeConfig extends Effect.Service<AgentRuntimeConfig>()(
    * Default configuration layer for AgentRuntime.
    */
   static readonly layer = AgentRuntimeConfig.Default
+
+  /**
+   * Build AgentRuntimeConfig with explicit overrides applied to defaults.
+   */
+  static readonly layerWith = (overrides?: Partial<AgentRuntimeSettings>) =>
+    Layer.succeed(
+      AgentRuntimeConfig,
+      AgentRuntimeConfig.make({
+        settings: resolveSettings(overrides)
+      })
+    )
 }

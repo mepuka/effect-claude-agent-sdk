@@ -42,6 +42,8 @@
     "build": "tsup",
     "test": "bun test",
     "typecheck": "tsc --noEmit && tsc -p cloudflare/tsconfig.json",
+    "sync:dev": "cd cloudflare && bunx wrangler dev",
+    "sync:deploy": "cd cloudflare && bunx wrangler deploy",
     "prepublishOnly": "bun run build",
     "changeset": "changeset",
     "version": "changeset version",

@@ -13,6 +13,10 @@
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
     "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "effect-claude-agent-sdk": ["./src/index.ts"]
+    },
 
     // Best practices
     "strict": true,

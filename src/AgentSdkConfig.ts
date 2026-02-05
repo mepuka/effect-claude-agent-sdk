@@ -1,4 +1,5 @@
 import * as Config from "effect/Config"
+import * as ConfigProvider from "effect/ConfigProvider"
 import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
 import * as Option from "effect/Option"
@@ -265,6 +266,31 @@ export class AgentSdkConfig extends Effect.Service<AgentSdkConfig>()(
     effect: makeAgentSdkConfig
   }
 ) {
+  /**
+   * Build AgentSdkConfig with explicit overrides layered on top of environment config.
+   */
+  static readonly layerWithOverrides = (overrides: {
+    readonly apiKey?: string
+    readonly model?: string
+  }) => {
+    const entries: Array<[string, string]> = []
+    if (overrides.apiKey) {
+      entries.push(["ANTHROPIC_API_KEY", overrides.apiKey])
+    }
+    if (overrides.model) {
+      entries.push(["MODEL", overrides.model])
+    }
+    if (entries.length === 0) {
+      return AgentSdkConfig.layer
+    }
+    const provider = ConfigProvider.orElse(
+      ConfigProvider.fromMap(new Map(entries)),
+      () => ConfigProvider.fromEnv()
+    )
+    return AgentSdkConfig.layer.pipe(
+      Layer.provide(Layer.setConfigProvider(provider))
+    )
+  }
   /**
    * Build AgentSdkConfig by reading configuration from environment variables.
    * Use this when wiring AgentSdk in production.
