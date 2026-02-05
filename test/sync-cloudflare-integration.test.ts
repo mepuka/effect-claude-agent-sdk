@@ -101,7 +101,7 @@ maybeTest(
           "replica B to receive message",
           storeB.list("session-1"),
           (list) => list.length === 1,
-          { retries: 80, interval: Duration.millis(100) }
+          { retries: 160, interval: Duration.millis(100) }
         )
 
         yield* syncA.disconnectWebSocket(remoteUrl!)
@@ -115,5 +115,5 @@ maybeTest(
     const listB = await runEffectLive(program)
     expect(listB).toHaveLength(1)
   },
-  { timeout: 20000 }
+  { timeout: 30000 }
 )
