@@ -81,7 +81,7 @@ const layer = SyncService.layerWebSocket("wss://<worker>.workers.dev/event-log",
 Run the Cloudflare integration test against the deployed worker:
 
 ```bash
-CLOUDFLARE_SYNC_URL="https://effect-sync.kokokessy.workers.dev" \
+CLOUDFLARE_SYNC_URL="wss://effect-sync.kokokessy.workers.dev/event-log" \
   bun test test/sync-cloudflare-integration.test.ts
 ```
 
