@@ -62,7 +62,9 @@ export class SyncDurableObject extends EventLogDurableObject {
     })
     this.debug = env.SYNC_DEBUG === "1" || env.SYNC_DEBUG === "true"
     this.storageReady = this.runtime.runPromise(
-      Effect.service(EventLogServer.Storage).pipe(Effect.asVoid)
+      Effect.gen(function*() {
+        yield* EventLogServer.Storage
+      }).pipe(Effect.asVoid)
     )
   }
 
