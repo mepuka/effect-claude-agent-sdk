@@ -46,6 +46,7 @@ export type ArtifactJournaledOptions<R = never> = {
 
 export type ArtifactSyncOptions<R = never> = ArtifactJournaledOptions<R> & {
   readonly disablePing?: boolean
+  readonly protocols?: string | Array<string>
   readonly syncInterval?: Duration.DurationInput
 }
 
@@ -1061,9 +1062,10 @@ export class ArtifactStore extends Context.Tag("@effect/claude-agent-sdk/Artifac
   ) => Layer.Layer<ArtifactStore, unknown, KeyValueStore.KeyValueStore | R> = (url, options) => {
     const baseLayer = ArtifactStore.layerJournaledWithEventLog(resolveJournaledOptions(options))
     const syncOptions =
-      options?.disablePing !== undefined
+      options?.disablePing !== undefined || options?.protocols !== undefined
         ? {
-            ...(options?.disablePing !== undefined ? { disablePing: options.disablePing } : {})
+            ...(options?.disablePing !== undefined ? { disablePing: options.disablePing } : {}),
+            ...(options?.protocols !== undefined ? { protocols: options.protocols } : {})
           }
         : undefined
     let syncLayer = SyncService.layerWebSocket(

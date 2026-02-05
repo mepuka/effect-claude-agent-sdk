@@ -19,12 +19,21 @@ export type RemoteSyncLayerOptions = Omit<RemoteSyncOptions, "url" | "conflictPo
   readonly authToken?: string
 }
 
+const tenantPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
+
 export const buildRemoteUrl = (baseUrl: string, options?: RemoteUrlOptions) => {
   const url = new URL(baseUrl)
-  const tenant = options?.tenant
   const path = url.pathname === "/" ? "/event-log" : url.pathname
-  if (tenant && (path === "/event-log" || path === "/event-log/")) {
-    url.pathname = `/event-log/${tenant}`
+  const isEventLogPath = path === "/event-log" || path === "/event-log/"
+  if (isEventLogPath) {
+    const tenant = options?.tenant
+    if (!tenant) {
+      throw new Error("Remote sync requires a tenant when using /event-log.")
+    }
+    if (!tenantPattern.test(tenant)) {
+      throw new Error("Invalid tenant format.")
+    }
+    url.pathname = `/event-log/${encodeURIComponent(tenant)}`
   } else {
     url.pathname = path
   }

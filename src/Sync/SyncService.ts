@@ -50,6 +50,7 @@ export type SyncConfigOptions = {
 
 export type SyncServiceWebSocketOptions = {
   readonly disablePing?: boolean
+  readonly protocols?: string | Array<string>
 }
 
 const remoteIdToString = (remoteId: Uint8Array) =>
@@ -210,12 +211,13 @@ function makeService() {
         readonly connected?: boolean
         readonly url?: string
         readonly lastSyncAt?: number
-        readonly lastError?: string
+        readonly lastError?: string | null
       }
     ) => {
       const url = next.url ?? previous?.url
       const lastSyncAt = next.lastSyncAt ?? previous?.lastSyncAt
-      const lastError = next.lastError ?? previous?.lastError
+      const lastError =
+        next.lastError === null ? undefined : next.lastError ?? previous?.lastError
       return buildStatus({
         key: next.key,
         kind: next.kind ?? previous?.kind ?? "remoteId",
@@ -241,6 +243,7 @@ function makeService() {
               remoteId: previous?.remoteId ?? key,
               connected: true,
               lastSyncAt: now,
+              lastError: null,
               ...(url !== undefined ? { url } : {})
             })
           )
@@ -275,7 +278,8 @@ function makeService() {
             mergeStatus(previous, {
               key,
               connected: true,
-              lastSyncAt: now
+              lastSyncAt: now,
+              lastError: null
             })
           )
           return next
@@ -448,10 +452,17 @@ function makeService() {
           ),
         onSome: (constructor) => Effect.succeed(constructor)
       })
-      const effect = EventLogRemote.fromWebSocket(url, options).pipe(
+      const socket = yield* Socket.makeWebSocket(url, {
+        protocols: options?.protocols
+      }).pipe(
+        Effect.provideService(Socket.WebSocketConstructor, webSocketConstructor)
+      )
+      const effect = EventLogRemote.fromSocket({
+        ...(options?.disablePing !== undefined ? { disablePing: options.disablePing } : {})
+      }).pipe(
         Effect.provideService(EventLogModule.EventLog, trackedEventLog(url)),
         Effect.provideService(EventLogEncryption.EventLogEncryption, encryption),
-        Effect.provideService(Socket.WebSocketConstructor, webSocketConstructor)
+        Effect.provideService(Socket.Socket, socket)
       )
       yield* connectInternal(url, "url", effect, url)
     })

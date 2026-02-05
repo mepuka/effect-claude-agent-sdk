@@ -49,6 +49,7 @@ export type ChatHistoryJournaledOptions<R = never> = {
 
 export type ChatHistorySyncOptions<R = never> = ChatHistoryJournaledOptions<R> & {
   readonly disablePing?: boolean
+  readonly protocols?: string | Array<string>
   readonly syncInterval?: Duration.DurationInput
 }
 
@@ -1082,9 +1083,10 @@ export class ChatHistoryStore extends Context.Tag("@effect/claude-agent-sdk/Chat
   ) => Layer.Layer<ChatHistoryStore, unknown, KeyValueStore.KeyValueStore | R> = (url, options) => {
     const baseLayer = ChatHistoryStore.layerJournaledWithEventLog(resolveJournaledOptions(options))
     const syncOptions =
-      options?.disablePing !== undefined
+      options?.disablePing !== undefined || options?.protocols !== undefined
         ? {
-            ...(options?.disablePing !== undefined ? { disablePing: options.disablePing } : {})
+            ...(options?.disablePing !== undefined ? { disablePing: options.disablePing } : {}),
+            ...(options?.protocols !== undefined ? { protocols: options.protocols } : {})
           }
         : undefined
     let syncLayer = SyncService.layerWebSocket(

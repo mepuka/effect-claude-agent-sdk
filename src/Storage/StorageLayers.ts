@@ -33,6 +33,7 @@ export type StorageLayersWithSync<E = unknown, R = unknown> = StorageLayers<E, R
 export type StorageSyncLayerOptions<R = never> = StorageLayerOptions & {
   readonly syncInterval?: Duration.DurationInput
   readonly disablePing?: boolean
+  readonly protocols?: string | Array<string>
   readonly syncChatHistory?: boolean
   readonly syncArtifacts?: boolean
   readonly conflictPolicy?: Layer.Layer<ConflictPolicy, unknown, R>
@@ -154,9 +155,10 @@ export const layerFileSystemBunJournaled = (options?: StorageLayerOptions) => {
 }
 
 const resolveSyncOptions = (options?: StorageSyncLayerOptions<unknown>) =>
-  options?.disablePing !== undefined
+  options?.disablePing !== undefined || options?.protocols !== undefined
     ? {
-        ...(options?.disablePing !== undefined ? { disablePing: options.disablePing } : {})
+        ...(options?.disablePing !== undefined ? { disablePing: options.disablePing } : {}),
+        ...(options?.protocols !== undefined ? { protocols: options.protocols } : {})
       }
     : undefined
 

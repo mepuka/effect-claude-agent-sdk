@@ -35,13 +35,16 @@ const sharedIdentityKey = "sync-test-cloudflare-identity"
 const makeReplicaLayer = (
   url: string,
   kv: KeyValueStore.KeyValueStore,
-  options: { readonly prefix: string }
+  options: { readonly prefix: string; readonly protocols?: string | Array<string> }
 ) => {
   const baseLayer = Storage.ChatHistoryStore.layerJournaledWithEventLog({
     prefix: options.prefix,
     identityKey: sharedIdentityKey
   })
-  const syncLayer = Sync.SyncService.layerWebSocket(url, { disablePing: true }).pipe(
+  const syncLayer = Sync.SyncService.layerWebSocket(url, {
+    disablePing: true,
+    ...(options.protocols !== undefined ? { protocols: options.protocols } : {})
+  }).pipe(
     Layer.provide(baseLayer)
   )
   return Layer.merge(baseLayer, syncLayer).pipe(
@@ -52,11 +55,11 @@ const makeReplicaLayer = (
 const baseUrl = Bun.env.CLOUDFLARE_SYNC_URL
 const tenant = Bun.env.CLOUDFLARE_SYNC_TENANT ?? `test-${Date.now()}`
 const authToken = Bun.env.CLOUDFLARE_SYNC_TOKEN
+const protocols = authToken ? `sync-auth.${authToken}` : undefined
 
 const remoteUrl = baseUrl
   ? Sync.buildRemoteUrl(baseUrl, {
-      tenant,
-      ...(authToken !== undefined ? { authToken } : {})
+      tenant
     })
   : undefined
 
@@ -71,10 +74,10 @@ maybeTest(
         const kv = Context.get(kvContext, KeyValueStore.KeyValueStore)
 
         const replicaAContext = yield* Layer.build(
-          makeReplicaLayer(remoteUrl!, kv, { prefix: "replica-a" })
+          makeReplicaLayer(remoteUrl!, kv, { prefix: "replica-a", protocols })
         )
         const replicaBContext = yield* Layer.build(
-          makeReplicaLayer(remoteUrl!, kv, { prefix: "replica-b" })
+          makeReplicaLayer(remoteUrl!, kv, { prefix: "replica-b", protocols })
         )
 
         const storeA = Context.get(replicaAContext, Storage.ChatHistoryStore)

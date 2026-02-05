@@ -1,9 +1,10 @@
 /// <reference types="@cloudflare/workers-types" />
 import type { DurableObjectState } from "@cloudflare/workers-types"
 import { EventLogDurableObject } from "@effect/experimental/EventLogServer/Cloudflare"
-import type * as Layer from "effect/Layer"
+import * as Effect from "effect/Effect"
+import * as Layer from "effect/Layer"
 import * as Schema from "effect/Schema"
-import type * as EventLogServer from "@effect/experimental/EventLogServer"
+import * as EventLogServer from "@effect/experimental/EventLogServer"
 import * as EventLogRemote from "@effect/experimental/EventLogRemote"
 import { layerStorageDo } from "../storage/StorageDo.js"
 import { layerStorageD1 } from "../storage/StorageD1.js"
@@ -16,23 +17,42 @@ class SyncStorageUnavailableError extends Schema.TaggedError<SyncStorageUnavaila
   }
 ) {}
 
-const makeStorageLayer = (
-  ctx: DurableObjectState,
-  env: SyncDoEnv
-): Layer.Layer<EventLogServer.Storage> => {
-  if (env.SYNC_DB) {
-    return layerStorageD1(env.SYNC_DB)
-  }
-  if (!ctx.storage.sql) {
-    throw SyncStorageUnavailableError.make({
-      message: "Durable Object sqlite storage is not available. Enable durable_object_sqlite."
+const makeStorageLayer = (ctx: DurableObjectState, env: SyncDoEnv) => {
+  return Layer.unwrapEffect(
+    Effect.gen(function*() {
+      if (env.SYNC_STORAGE === "d1") {
+        if (!env.SYNC_DB) {
+          return yield* SyncStorageUnavailableError.make({
+            message: "SYNC_STORAGE is 'd1' but SYNC_DB is not bound."
+          })
+        }
+        return layerStorageD1(env.SYNC_DB)
+      }
+      if (env.SYNC_STORAGE === "do") {
+        if (!ctx.storage.sql) {
+          return yield* SyncStorageUnavailableError.make({
+            message: "SYNC_STORAGE is 'do' but Durable Object sqlite storage is not available."
+          })
+        }
+        return layerStorageDo(ctx.storage.sql)
+      }
+      if (env.SYNC_DB) {
+        return layerStorageD1(env.SYNC_DB)
+      }
+      if (!ctx.storage.sql) {
+        return yield* SyncStorageUnavailableError.make({
+          message:
+            "Sync storage unavailable. Bind SYNC_DB or enable durable_object_sqlite."
+        })
+      }
+      return layerStorageDo(ctx.storage.sql)
     })
-  }
-  return layerStorageDo(ctx.storage.sql)
+  )
 }
 
 export class SyncDurableObject extends EventLogDurableObject {
   private readonly debug: boolean
+  private readonly storageReady: Promise<void>
 
   constructor(ctx: DurableObjectState, env: SyncDoEnv) {
     super({
@@ -41,6 +61,23 @@ export class SyncDurableObject extends EventLogDurableObject {
       storageLayer: makeStorageLayer(ctx, env)
     })
     this.debug = env.SYNC_DEBUG === "1" || env.SYNC_DEBUG === "true"
+    this.storageReady = this.runtime.runPromise(
+      Effect.service(EventLogServer.Storage).pipe(Effect.asVoid)
+    )
+  }
+
+  override async fetch(): Promise<Response> {
+    try {
+      await this.storageReady
+    } catch (error) {
+      console.error("[sync-do] Storage init failed", error)
+      const message =
+        typeof error === "object" && error !== null && "message" in error
+          ? String((error as { message?: unknown }).message ?? "Storage unavailable")
+          : "Storage unavailable"
+      return new Response(message, { status: 503 })
+    }
+    return super.fetch()
   }
 
   override webSocketOpen(_ws: WebSocket) {

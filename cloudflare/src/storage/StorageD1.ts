@@ -21,6 +21,5 @@ export const layerStorageD1 = (
   options?: StorageOptions
 ): Layer.Layer<EventLogServer.Storage> =>
   SqlEventLogServer.layerStorageSubtle(withDefaults(options)).pipe(
-    Layer.provide(D1Client.layer({ db })),
-    Layer.orDie
+    Layer.provide(D1Client.layer({ db }))
   )
