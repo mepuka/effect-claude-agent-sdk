@@ -77,6 +77,20 @@ const layer = SyncService.layerWebSocket("wss://<worker>.workers.dev/event-log",
 )
 ```
 
+## Smoke Test
+Run the Cloudflare integration test against the deployed worker:
+
+```bash
+CLOUDFLARE_SYNC_URL="https://effect-sync.kokokessy.workers.dev" \
+  bun test test/sync-cloudflare-integration.test.ts
+```
+
+If you set an auth token, also provide:
+
+```bash
+CLOUDFLARE_SYNC_TOKEN="your-token"
+```
+
 ## Files
 - `src/worker.ts` — Worker entrypoint (routing + auth)
 - `src/do/SyncDurableObject.ts` — Durable Object class
