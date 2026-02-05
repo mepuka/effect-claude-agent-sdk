@@ -1,7 +1,6 @@
 name = "effect-sync"
 main = "src/worker.ts"
 compatibility_date = "2026-02-01"
-compatibility_flags = ["durable_object_sqlite"]
 
 [durable_objects]
 bindings = [{ name = "SYNC_DO", class_name = "SyncDurableObject" }]

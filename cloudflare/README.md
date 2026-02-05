@@ -7,7 +7,6 @@ EventLogRemote protocol for syncing SDK replicas. The Durable Object uses Effect
 ## Quick Start
 1. Copy `wrangler.toml` and adjust `name`, `account_id`, and `compatibility_date`.
 2. Ensure Durable Object SQLite is enabled:
-   - `compatibility_flags = ["durable_object_sqlite"]`
    - `migrations = [{ tag = "v1", new_sqlite_classes = ["SyncDurableObject"] }]`
 3. Bind the Durable Object:
    - `SYNC_DO` → `SyncDurableObject`
@@ -21,6 +20,17 @@ bun run sync:dev
 
 Optional: bind a D1 database as `SYNC_DB` to use D1 storage instead of DO SQLite.
 
+## Deploy (Wrangler)
+Ensure you are authenticated (`bunx wrangler whoami`) and then deploy from the
+`cloudflare` directory:
+
+```bash
+cd cloudflare
+bunx wrangler deploy
+```
+
+If you set `SYNC_AUTH_TOKEN`, also add it as a worker secret or `vars` entry.
+
 ## Storage Mode
 - **Default (recommended v1):** Durable Object SQLite (`ctx.storage.sql`)
 - **Optional:** D1 via `SYNC_DB` binding
@@ -33,6 +43,39 @@ Set `SYNC_AUTH_TOKEN` (Worker env var). The worker accepts:
 ## Client Notes
 Cloudflare DO does **not** implement Ping/Pong or StopChanges. For Cloudflare endpoints,
 clients should set `disablePing: true` unless the DO is extended to handle Ping/Pong.
+
+## Client Usage
+```ts
+import * as Effect from "effect/Effect"
+import { AgentRuntime } from "effect-claude-agent-sdk"
+
+const runtimeLayer = AgentRuntime.layerWithRemoteSync({
+  provider: "cloudflare",
+  url: "wss://<your-worker>.workers.dev/event-log",
+  // optional auth: append ?token=... or use Authorization header
+  syncInterval: "5 seconds",
+  syncChatHistory: true,
+  syncArtifacts: true
+})
+
+const program = Effect.gen(function*() {
+  const runtime = yield* AgentRuntime
+  return runtime
+}).pipe(Effect.provide(runtimeLayer))
+```
+
+If you need a custom sync interval with `SyncService`, provide `SyncConfig.layer`:
+
+```ts
+import * as Layer from "effect/Layer"
+import { SyncConfig, SyncService } from "effect-claude-agent-sdk/Sync"
+
+const layer = SyncService.layerWebSocket("wss://<worker>.workers.dev/event-log", {
+  disablePing: true
+}).pipe(
+  Layer.provide(SyncConfig.layer({ syncInterval: "5 seconds" }))
+)
+```
 
 ## Files
 - `src/worker.ts` — Worker entrypoint (routing + auth)
