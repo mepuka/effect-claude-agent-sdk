@@ -18,7 +18,9 @@ export type EventLogRemoteServerOptions = {
 
 /**
  * Build a WebSocket URL from a bound server address.
- * Throws if the address is not a TCP address. Prefer `toWebSocketUrlEffect`.
+ * Throws if the address is not a TCP address.
+ *
+ * @deprecated Prefer `toWebSocketUrlEffect`.
  */
 export const toWebSocketUrl = (
   address: HttpServer.Address,

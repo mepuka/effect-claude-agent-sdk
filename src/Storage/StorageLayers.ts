@@ -196,21 +196,14 @@ const buildChatSyncLayers = <R>(
   return { chatHistory, syncLayer }
 }
 
-const layersFileSystemJournaledWithSyncWebSocket = (
+const buildJournaledSyncLayers = <R>(
   url: string,
-  options?: StorageSyncLayerOptions
-): StorageLayersWithSync<unknown, FileSystem | Path> => {
-  const directory = options?.directory
+  options: StorageSyncLayerOptions | undefined,
+  baseLayers: StorageLayers<unknown, R>,
+  kvsLayer: Layer.Layer<KeyValueStore.KeyValueStore, unknown, R>
+): StorageLayersWithSync<unknown, R> => {
   const flags = resolveSyncFlags(options)
-  const kvsLayer = KeyValueStore.layerFileSystem(
-    directory ?? defaultStorageDirectory
-  )
-
-  const baseLayers = layersFileSystemJournaled(
-    directory !== undefined ? { directory } : undefined
-  )
-
-  let syncLayer: Layer.Layer<SyncService, unknown, FileSystem | Path> | undefined
+  let syncLayer: Layer.Layer<SyncService, unknown, R> | undefined
   const chatHistory = flags.syncChatHistory
     ? flags.exposeSync
       ? (() => {
@@ -240,46 +233,32 @@ const layersFileSystemJournaledWithSyncWebSocket = (
   }
 }
 
+const layersFileSystemJournaledWithSyncWebSocket = (
+  url: string,
+  options?: StorageSyncLayerOptions
+): StorageLayersWithSync<unknown, FileSystem | Path> => {
+  const directory = options?.directory
+  const kvsLayer = KeyValueStore.layerFileSystem(
+    directory ?? defaultStorageDirectory
+  )
+  const baseLayers = layersFileSystemJournaled(
+    directory !== undefined ? { directory } : undefined
+  )
+  return buildJournaledSyncLayers(url, options, baseLayers, kvsLayer)
+}
+
 export const layersFileSystemBunJournaledWithSyncWebSocket = (
   url: string,
   options?: StorageSyncLayerOptions
 ): StorageLayersWithSync<unknown, never> => {
   const directory = options?.directory
-  const flags = resolveSyncFlags(options)
   const kvsLayer = BunKeyValueStore.layerFileSystem(
     directory ?? defaultStorageDirectory
   )
-
   const baseLayers = layersFileSystemBunJournaled(
     directory !== undefined ? { directory } : undefined
   )
-
-  let syncLayer: Layer.Layer<SyncService, unknown, never> | undefined
-  const chatHistory = flags.syncChatHistory
-    ? flags.exposeSync
-      ? (() => {
-          const chatSync = buildChatSyncLayers(url, options, kvsLayer)
-          syncLayer = chatSync.syncLayer
-          return chatSync.chatHistory
-        })()
-      : ChatHistoryStore.layerJournaledWithSyncWebSocket(
-          url,
-          resolveSyncOptions(options)
-        ).pipe(Layer.provide(kvsLayer))
-    : baseLayers.chatHistory
-
-  return {
-    chatHistory,
-    artifacts: flags.syncArtifacts
-    ? ArtifactStore.layerJournaledWithSyncWebSocket(
-        url,
-        resolveSyncOptions(options)
-      ).pipe(Layer.provide(kvsLayer))
-      : baseLayers.artifacts,
-    auditLog: baseLayers.auditLog,
-    sessionIndex: baseLayers.sessionIndex,
-    ...(syncLayer ? { sync: syncLayer } : {})
-  }
+  return buildJournaledSyncLayers(url, options, baseLayers, kvsLayer)
 }
 
 export const layerFileSystemBunJournaledWithSyncWebSocket = (
