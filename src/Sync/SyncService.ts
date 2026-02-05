@@ -23,6 +23,12 @@ import type { EventLogRemoteServerError } from "./EventLogRemoteServer.js"
 
 export type RemoteKind = "remoteId" | "url"
 
+/**
+ * Identifies a remote in the SyncService registry.
+ *
+ * - kind: "url" for WebSocket connections (key = URL)
+ * - kind: "remoteId" for direct EventLogRemote connections (key = remoteId hex)
+ */
 export type RemoteKey = {
   readonly key: string
   readonly kind: RemoteKind
@@ -44,7 +50,6 @@ export type SyncConfigOptions = {
 
 export type SyncServiceWebSocketOptions = {
   readonly disablePing?: boolean
-  readonly syncInterval?: Duration.DurationInput
 }
 
 const remoteIdToString = (remoteId: Uint8Array) =>
@@ -69,7 +74,10 @@ export class SyncService extends Context.Tag("@effect/claude-agent-sdk/SyncServi
   {
     readonly connect: (remote: EventLogRemote.EventLogRemote) => Effect.Effect<void>
     readonly connectWebSocket: (url: string, options?: SyncServiceWebSocketOptions) => Effect.Effect<void>
-    readonly disconnect: (remoteId: string) => Effect.Effect<void>
+    /**
+     * Disconnects a remote by key (URL or remoteId hex).
+     */
+    readonly disconnect: (key: RemoteKey | string) => Effect.Effect<void>
     /**
      * @deprecated Use `disconnect` instead.
      */
@@ -92,18 +100,13 @@ export class SyncService extends Context.Tag("@effect/claude-agent-sdk/SyncServi
     options?: SyncServiceWebSocketOptions
   ) => {
     const socketLayer = BunSocket.layerNet({ host, port })
-    let layer = Layer.scoped(
+    const layer = Layer.scoped(
       SyncService,
       makeWithSocket(`tcp://${host}:${port}`, options)
     ).pipe(
       Layer.provide(socketLayer),
       Layer.provide(EventLogEncryption.layerSubtle)
     )
-    if (options?.syncInterval !== undefined) {
-      layer = layer.pipe(
-        Layer.provide(SyncConfig.layer({ syncInterval: options.syncInterval }))
-      )
-    }
     return layer
   }
 
@@ -114,15 +117,10 @@ export class SyncService extends Context.Tag("@effect/claude-agent-sdk/SyncServi
     url: string,
     options?: SyncServiceWebSocketOptions
   ) => {
-    let layer = Layer.scoped(SyncService, makeWithWebSocket(url, options)).pipe(
+    const layer = Layer.scoped(SyncService, makeWithWebSocket(url, options)).pipe(
       Layer.provide(BunSocket.layerWebSocketConstructor),
       Layer.provide(EventLogEncryption.layerSubtle)
     )
-    if (options?.syncInterval !== undefined) {
-      layer = layer.pipe(
-        Layer.provide(SyncConfig.layer({ syncInterval: options.syncInterval }))
-      )
-    }
     return layer
   }
 
@@ -132,15 +130,10 @@ export class SyncService extends Context.Tag("@effect/claude-agent-sdk/SyncServi
     Layer.unwrapEffect(
       Effect.gen(function*() {
         const server = yield* EventLogRemoteServer
-        let layer = Layer.scoped(SyncService, makeWithWebSocket(server.url, options)).pipe(
+        const layer = Layer.scoped(SyncService, makeWithWebSocket(server.url, options)).pipe(
           Layer.provide(BunSocket.layerWebSocketConstructor),
           Layer.provide(EventLogEncryption.layerSubtle)
         )
-        if (options?.syncInterval !== undefined) {
-          layer = layer.pipe(
-            Layer.provide(SyncConfig.layer({ syncInterval: options.syncInterval }))
-          )
-        }
         return layer
       })
     ).pipe(
@@ -463,12 +456,16 @@ function makeService() {
       yield* connectInternal(url, "url", effect, url)
     })
 
-    const disconnect = Effect.fn("SyncService.disconnect")((remoteId: string) =>
-      FiberMap.remove(fibers, remoteId).pipe(
-        Effect.zipRight(removeConnector(remoteId)),
-        Effect.zipRight(markDisconnected(remoteId))
+    const toKey = (input: RemoteKey | string) =>
+      typeof input === "string" ? input : input.key
+
+    const disconnect = Effect.fn("SyncService.disconnect")((input: RemoteKey | string) => {
+      const key = toKey(input)
+      return FiberMap.remove(fibers, key).pipe(
+        Effect.zipRight(removeConnector(key)),
+        Effect.zipRight(markDisconnected(key))
       )
-    )
+    })
 
     const disconnectRemoteId = disconnect
 

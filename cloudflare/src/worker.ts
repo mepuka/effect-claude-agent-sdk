@@ -36,7 +36,12 @@ export default {
     const tenant = getTenantId(url)
     const id = env.SYNC_DO.idFromName(tenant)
     const stub = env.SYNC_DO.get(id)
-    return stub.fetch(request)
+    try {
+      return await stub.fetch(request)
+    } catch (error) {
+      console.error("Sync durable object fetch failed.", error)
+      return new Response("Sync durable object unavailable.", { status: 502 })
+    }
   }
 }
 

@@ -15,7 +15,7 @@ import { ChatEvent, ChatEventSource } from "../Schema/Storage.js"
 import { Compaction, compactEntries } from "../Sync/Compaction.js"
 import type { CompactionStrategy } from "../Sync/Compaction.js"
 import { ConflictPolicy } from "../Sync/ConflictPolicy.js"
-import { SyncService } from "../Sync/SyncService.js"
+import { SyncConfig, SyncService } from "../Sync/SyncService.js"
 import {
   defaultChatEventJournalKey,
   defaultChatHistoryPrefix,
@@ -40,14 +40,14 @@ export type ChatHistoryListOptions = {
   readonly reverse?: boolean
 }
 
-export type ChatHistoryJournaledOptions = {
+export type ChatHistoryJournaledOptions<R = never> = {
   readonly prefix?: string
   readonly journalKey?: string
   readonly identityKey?: string
-  readonly conflictPolicy?: Layer.Layer<ConflictPolicy>
+  readonly conflictPolicy?: Layer.Layer<ConflictPolicy, unknown, R>
 }
 
-export type ChatHistorySyncOptions = ChatHistoryJournaledOptions & {
+export type ChatHistorySyncOptions<R = never> = ChatHistoryJournaledOptions<R> & {
   readonly disablePing?: boolean
   readonly syncInterval?: Duration.DurationInput
 }
@@ -177,7 +177,7 @@ const resolveJournalKeys = (options?: {
       : defaultChatIdentityKey)
 })
 
-const resolveJournaledOptions = (options?: ChatHistoryJournaledOptions) => ({
+const resolveJournaledOptions = <R = never>(options?: ChatHistoryJournaledOptions<R>) => ({
   ...(options?.prefix !== undefined ? { prefix: options.prefix } : {}),
   ...(options?.journalKey !== undefined ? { journalKey: options.journalKey } : {}),
   ...(options?.identityKey !== undefined ? { identityKey: options.identityKey } : {}),
@@ -351,9 +351,9 @@ const layerChatJournalCompaction = Layer.scopedDiscard(
   })
 )
 
-const journaledEventLogLayer: (
-  options?: ChatHistoryJournaledOptions
-) => Layer.Layer<EventLogModule.EventLog, unknown, KeyValueStore.KeyValueStore> = (options) => {
+const journaledEventLogLayer = <R = never>(
+  options?: ChatHistoryJournaledOptions<R>
+): Layer.Layer<EventLogModule.EventLog, unknown, KeyValueStore.KeyValueStore | R> => {
   const keys = resolveJournalKeys(options)
   const conflictPolicyLayer =
     options?.conflictPolicy ?? ConflictPolicy.layerLastWriteWins
@@ -1056,17 +1056,17 @@ export class ChatHistoryStore extends Context.Tag("@effect/claude-agent-sdk/Chat
       })
     )
 
-  static readonly layerJournaled = (options?: ChatHistoryJournaledOptions) =>
+  static readonly layerJournaled = <R = never>(options?: ChatHistoryJournaledOptions<R>) =>
     Layer.effect(ChatHistoryStore, makeJournaledStore(options)).pipe(
       Layer.provide(journaledEventLogLayer(options))
     )
 
-  static readonly layerJournaledWithEventLog: (
-    options?: ChatHistoryJournaledOptions
+  static readonly layerJournaledWithEventLog: <R = never>(
+    options?: ChatHistoryJournaledOptions<R>
   ) => Layer.Layer<
     ChatHistoryStore | EventLogModule.EventLog,
     unknown,
-    KeyValueStore.KeyValueStore
+    KeyValueStore.KeyValueStore | R
   > = (options) =>
     {
       const eventLogLayer = journaledEventLogLayer(options)
@@ -1076,24 +1076,28 @@ export class ChatHistoryStore extends Context.Tag("@effect/claude-agent-sdk/Chat
       return Layer.merge(eventLogLayer, storeLayer)
     }
 
-  static readonly layerJournaledWithSyncWebSocket: (
+  static readonly layerJournaledWithSyncWebSocket: <R = never>(
     url: string,
-    options?: ChatHistorySyncOptions
-  ) => Layer.Layer<ChatHistoryStore, unknown, KeyValueStore.KeyValueStore> = (url, options) => {
+    options?: ChatHistorySyncOptions<R>
+  ) => Layer.Layer<ChatHistoryStore, unknown, KeyValueStore.KeyValueStore | R> = (url, options) => {
     const baseLayer = ChatHistoryStore.layerJournaledWithEventLog(resolveJournaledOptions(options))
     const syncOptions =
-      options?.disablePing !== undefined || options?.syncInterval !== undefined
+      options?.disablePing !== undefined
         ? {
-            ...(options?.disablePing !== undefined ? { disablePing: options.disablePing } : {}),
-            ...(options?.syncInterval !== undefined ? { syncInterval: options.syncInterval } : {})
+            ...(options?.disablePing !== undefined ? { disablePing: options.disablePing } : {})
           }
         : undefined
-    const syncLayer = SyncService.layerWebSocket(
+    let syncLayer = SyncService.layerWebSocket(
       url,
       syncOptions
     ).pipe(
       Layer.provide(baseLayer)
     )
+    if (options?.syncInterval !== undefined) {
+      syncLayer = syncLayer.pipe(
+        Layer.provide(SyncConfig.layer({ syncInterval: options.syncInterval }))
+      )
+    }
     const combined = Layer.merge(baseLayer, syncLayer)
     return Layer.project(
       combined,

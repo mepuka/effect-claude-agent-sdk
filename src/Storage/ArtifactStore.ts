@@ -10,7 +10,7 @@ import * as Option from "effect/Option"
 import * as Schema from "effect/Schema"
 import * as SynchronizedRef from "effect/SynchronizedRef"
 import { ArtifactRecord } from "../Schema/Storage.js"
-import { SyncService } from "../Sync/SyncService.js"
+import { SyncConfig, SyncService } from "../Sync/SyncService.js"
 import { Compaction, compactEntries } from "../Sync/Compaction.js"
 import type { CompactionStrategy } from "../Sync/Compaction.js"
 import { ConflictPolicy } from "../Sync/ConflictPolicy.js"
@@ -37,14 +37,14 @@ export type ArtifactListOptions = {
   readonly limit?: number
 }
 
-export type ArtifactJournaledOptions = {
+export type ArtifactJournaledOptions<R = never> = {
   readonly prefix?: string
   readonly journalKey?: string
   readonly identityKey?: string
-  readonly conflictPolicy?: Layer.Layer<ConflictPolicy>
+  readonly conflictPolicy?: Layer.Layer<ConflictPolicy, unknown, R>
 }
 
-export type ArtifactSyncOptions = ArtifactJournaledOptions & {
+export type ArtifactSyncOptions<R = never> = ArtifactJournaledOptions<R> & {
   readonly disablePing?: boolean
   readonly syncInterval?: Duration.DurationInput
 }
@@ -71,7 +71,7 @@ const resolveJournalKeys = (options?: {
       : defaultArtifactIdentityKey)
 })
 
-const resolveJournaledOptions = (options?: ArtifactJournaledOptions) => ({
+const resolveJournaledOptions = <R = never>(options?: ArtifactJournaledOptions<R>) => ({
   ...(options?.prefix !== undefined ? { prefix: options.prefix } : {}),
   ...(options?.journalKey !== undefined ? { journalKey: options.journalKey } : {}),
   ...(options?.identityKey !== undefined ? { identityKey: options.identityKey } : {}),
@@ -406,9 +406,9 @@ const layerArtifactJournalCompaction = Layer.scopedDiscard(
   })
 )
 
-const journaledEventLogLayer: (
-  options?: ArtifactJournaledOptions
-) => Layer.Layer<EventLogModule.EventLog, unknown, KeyValueStore.KeyValueStore> = (options) => {
+const journaledEventLogLayer = <R = never>(
+  options?: ArtifactJournaledOptions<R>
+): Layer.Layer<EventLogModule.EventLog, unknown, KeyValueStore.KeyValueStore | R> => {
   const keys = resolveJournalKeys(options)
   const conflictPolicyLayer =
     options?.conflictPolicy ?? ConflictPolicy.layerLastWriteWins
@@ -1035,17 +1035,17 @@ export class ArtifactStore extends Context.Tag("@effect/claude-agent-sdk/Artifac
       })
     )
 
-  static readonly layerJournaled = (options?: ArtifactJournaledOptions) =>
+  static readonly layerJournaled = <R = never>(options?: ArtifactJournaledOptions<R>) =>
     Layer.effect(ArtifactStore, makeJournaledStore(options)).pipe(
       Layer.provide(journaledEventLogLayer(options))
     )
 
-  static readonly layerJournaledWithEventLog: (
-    options?: ArtifactJournaledOptions
+  static readonly layerJournaledWithEventLog: <R = never>(
+    options?: ArtifactJournaledOptions<R>
   ) => Layer.Layer<
     ArtifactStore | EventLogModule.EventLog,
     unknown,
-    KeyValueStore.KeyValueStore
+    KeyValueStore.KeyValueStore | R
   > = (options) =>
     {
       const eventLogLayer = journaledEventLogLayer(options)
@@ -1055,24 +1055,28 @@ export class ArtifactStore extends Context.Tag("@effect/claude-agent-sdk/Artifac
       return Layer.merge(eventLogLayer, storeLayer)
     }
 
-  static readonly layerJournaledWithSyncWebSocket: (
+  static readonly layerJournaledWithSyncWebSocket: <R = never>(
     url: string,
-    options?: ArtifactSyncOptions
-  ) => Layer.Layer<ArtifactStore, unknown, KeyValueStore.KeyValueStore> = (url, options) => {
+    options?: ArtifactSyncOptions<R>
+  ) => Layer.Layer<ArtifactStore, unknown, KeyValueStore.KeyValueStore | R> = (url, options) => {
     const baseLayer = ArtifactStore.layerJournaledWithEventLog(resolveJournaledOptions(options))
     const syncOptions =
-      options?.disablePing !== undefined || options?.syncInterval !== undefined
+      options?.disablePing !== undefined
         ? {
-            ...(options?.disablePing !== undefined ? { disablePing: options.disablePing } : {}),
-            ...(options?.syncInterval !== undefined ? { syncInterval: options.syncInterval } : {})
+            ...(options?.disablePing !== undefined ? { disablePing: options.disablePing } : {})
           }
         : undefined
-    const syncLayer = SyncService.layerWebSocket(
+    let syncLayer = SyncService.layerWebSocket(
       url,
       syncOptions
     ).pipe(
       Layer.provide(baseLayer)
     )
+    if (options?.syncInterval !== undefined) {
+      syncLayer = syncLayer.pipe(
+        Layer.provide(SyncConfig.layer({ syncInterval: options.syncInterval }))
+      )
+    }
     const combined = Layer.merge(baseLayer, syncLayer)
     return Layer.project(
       combined,

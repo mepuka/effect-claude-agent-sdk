@@ -10,7 +10,7 @@ import { ChatHistoryStore } from "./ChatHistoryStore.js"
 import { SessionIndexStore } from "./SessionIndexStore.js"
 import { defaultStorageDirectory } from "./defaults.js"
 import type { ConflictPolicy } from "../Sync/ConflictPolicy.js"
-import { SyncService } from "../Sync/SyncService.js"
+import { SyncConfig, SyncService } from "../Sync/SyncService.js"
 
 export type StorageLayerOptions = {
   readonly directory?: string
@@ -27,26 +27,26 @@ export type StorageLayers<E = unknown, R = unknown> = {
 }
 
 export type StorageLayersWithSync<E = unknown, R = unknown> = StorageLayers<E, R> & {
-  readonly sync?: Layer.Layer<SyncService, unknown, R>
+  readonly sync?: Layer.Layer<SyncService, E, R>
 }
 
-export type StorageSyncLayerOptions = StorageLayerOptions & {
+export type StorageSyncLayerOptions<R = never> = StorageLayerOptions & {
   readonly syncInterval?: Duration.DurationInput
   readonly disablePing?: boolean
   readonly syncChatHistory?: boolean
   readonly syncArtifacts?: boolean
-  readonly conflictPolicy?: Layer.Layer<ConflictPolicy>
+  readonly conflictPolicy?: Layer.Layer<ConflictPolicy, unknown, R>
   readonly exposeSync?: boolean
 }
 
-export type StorageSyncOptions = Omit<StorageSyncLayerOptions, "directory"> & {
+export type StorageSyncOptions<R = never> = Omit<StorageSyncLayerOptions<R>, "directory"> & {
   readonly url: string
 }
 
-export type StorageLayerBundleOptions = StorageLayerOptions & {
+export type StorageLayerBundleOptions<R = never> = StorageLayerOptions & {
   readonly backend?: StorageBackend
   readonly mode?: StorageMode
-  readonly sync?: StorageSyncOptions
+  readonly sync?: StorageSyncOptions<R>
 }
 
 const resolveDirectory = (directory: string | undefined) =>
@@ -153,32 +153,26 @@ export const layerFileSystemBunJournaled = (options?: StorageLayerOptions) => {
   return mergeLayers(layers)
 }
 
-const resolveSyncOptions = (options?: StorageSyncLayerOptions) =>
-  options?.disablePing !== undefined ||
-  options?.syncInterval !== undefined ||
-  options?.conflictPolicy !== undefined
+const resolveSyncOptions = (options?: StorageSyncLayerOptions<unknown>) =>
+  options?.disablePing !== undefined
     ? {
-        ...(options?.disablePing !== undefined ? { disablePing: options.disablePing } : {}),
-        ...(options?.syncInterval !== undefined ? { syncInterval: options.syncInterval } : {}),
-        ...(options?.conflictPolicy !== undefined
-          ? { conflictPolicy: options.conflictPolicy }
-          : {})
+        ...(options?.disablePing !== undefined ? { disablePing: options.disablePing } : {})
       }
     : undefined
 
-const resolveSyncFlags = (options?: StorageSyncLayerOptions) => ({
+const resolveSyncFlags = (options?: StorageSyncLayerOptions<unknown>) => ({
   syncChatHistory: options?.syncChatHistory ?? true,
   syncArtifacts: options?.syncArtifacts ?? false,
   exposeSync: options?.exposeSync ?? false
 })
 
-const buildChatSyncLayers = <R>(
+const buildChatSyncLayers = <RBase, ROptions>(
   url: string,
-  options: StorageSyncLayerOptions | undefined,
-  kvsLayer: Layer.Layer<KeyValueStore.KeyValueStore, unknown, R>
+  options: StorageSyncLayerOptions<ROptions> | undefined,
+  kvsLayer: Layer.Layer<KeyValueStore.KeyValueStore, unknown, RBase>
 ): {
-  readonly chatHistory: Layer.Layer<ChatHistoryStore, unknown, R>
-  readonly syncLayer: Layer.Layer<SyncService, unknown, R>
+  readonly chatHistory: Layer.Layer<ChatHistoryStore, unknown, RBase | ROptions>
+  readonly syncLayer: Layer.Layer<SyncService, unknown, RBase | ROptions>
 } => {
   const baseLayer = ChatHistoryStore.layerJournaledWithEventLog(
     options?.conflictPolicy !== undefined ? { conflictPolicy: options.conflictPolicy } : undefined
@@ -189,21 +183,26 @@ const buildChatSyncLayers = <R>(
     ChatHistoryStore,
     (store) => store
   )
-  const syncLayer = SyncService.layerWebSocket(
+  let syncLayer = SyncService.layerWebSocket(
     url,
     resolveSyncOptions(options)
   ).pipe(Layer.provide(baseLayer))
+  if (options?.syncInterval !== undefined) {
+    syncLayer = syncLayer.pipe(
+      Layer.provide(SyncConfig.layer({ syncInterval: options.syncInterval }))
+    )
+  }
   return { chatHistory, syncLayer }
 }
 
-const buildJournaledSyncLayers = <R>(
+const buildJournaledSyncLayers = <RBase, ROptions>(
   url: string,
-  options: StorageSyncLayerOptions | undefined,
-  baseLayers: StorageLayers<unknown, R>,
-  kvsLayer: Layer.Layer<KeyValueStore.KeyValueStore, unknown, R>
-): StorageLayersWithSync<unknown, R> => {
+  options: StorageSyncLayerOptions<ROptions> | undefined,
+  baseLayers: StorageLayers<unknown, RBase>,
+  kvsLayer: Layer.Layer<KeyValueStore.KeyValueStore, unknown, RBase>
+): StorageLayersWithSync<unknown, RBase | ROptions> => {
   const flags = resolveSyncFlags(options)
-  let syncLayer: Layer.Layer<SyncService, unknown, R> | undefined
+  let syncLayer: Layer.Layer<SyncService, unknown, RBase | ROptions> | undefined
   const chatHistory = flags.syncChatHistory
     ? flags.exposeSync
       ? (() => {
@@ -213,14 +212,14 @@ const buildJournaledSyncLayers = <R>(
         })()
       : ChatHistoryStore.layerJournaledWithSyncWebSocket(
           url,
-          resolveSyncOptions(options)
+          options
         ).pipe(Layer.provide(kvsLayer))
     : baseLayers.chatHistory
 
   const artifacts = flags.syncArtifacts
     ? ArtifactStore.layerJournaledWithSyncWebSocket(
         url,
-        resolveSyncOptions(options)
+        options
       ).pipe(Layer.provide(kvsLayer))
     : baseLayers.artifacts
 
@@ -233,10 +232,10 @@ const buildJournaledSyncLayers = <R>(
   }
 }
 
-const layersFileSystemJournaledWithSyncWebSocket = (
+const layersFileSystemJournaledWithSyncWebSocket = <R = never>(
   url: string,
-  options?: StorageSyncLayerOptions
-): StorageLayersWithSync<unknown, FileSystem | Path> => {
+  options?: StorageSyncLayerOptions<R>
+): StorageLayersWithSync<unknown, FileSystem | Path | R> => {
   const directory = options?.directory
   const kvsLayer = KeyValueStore.layerFileSystem(
     directory ?? defaultStorageDirectory
@@ -247,10 +246,10 @@ const layersFileSystemJournaledWithSyncWebSocket = (
   return buildJournaledSyncLayers(url, options, baseLayers, kvsLayer)
 }
 
-export const layersFileSystemBunJournaledWithSyncWebSocket = (
+export const layersFileSystemBunJournaledWithSyncWebSocket = <R = never>(
   url: string,
-  options?: StorageSyncLayerOptions
-): StorageLayersWithSync<unknown, never> => {
+  options?: StorageSyncLayerOptions<R>
+): StorageLayersWithSync<unknown, R> => {
   const directory = options?.directory
   const kvsLayer = BunKeyValueStore.layerFileSystem(
     directory ?? defaultStorageDirectory
@@ -261,9 +260,9 @@ export const layersFileSystemBunJournaledWithSyncWebSocket = (
   return buildJournaledSyncLayers(url, options, baseLayers, kvsLayer)
 }
 
-export const layerFileSystemBunJournaledWithSyncWebSocket = (
+export const layerFileSystemBunJournaledWithSyncWebSocket = <R = never>(
   url: string,
-  options?: StorageSyncLayerOptions
+  options?: StorageSyncLayerOptions<R>
 ) => {
   const layers = layersFileSystemBunJournaledWithSyncWebSocket(url, options)
   const combined = mergeLayers(layers)
