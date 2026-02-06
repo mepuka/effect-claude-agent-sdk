@@ -40,3 +40,4 @@ cron-log.jsonl
 
 # local tooling
 .claude/
+.worktrees/
