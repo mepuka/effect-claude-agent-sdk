@@ -68,7 +68,21 @@ test("QuerySupervisor enforces concurrency limits", async () => {
     ),
     Layer.provide(
       AgentSdk.layer.pipe(
-        Layer.provide(Layer.succeed(AgentSdkConfig, AgentSdkConfig.make({ options: {} })))
+        Layer.provide(
+          Layer.succeed(
+            AgentSdkConfig,
+            AgentSdkConfig.make({
+              options: {},
+              sandboxProvider: Option.some("local"),
+              sandboxId: Option.none(),
+              sandboxSleepAfter: Option.none(),
+              storageBackend: Option.some("bun"),
+              storageMode: Option.some("standard"),
+              r2BucketBinding: Option.some("BUCKET"),
+              kvNamespaceBinding: Option.some("KV")
+            })
+          )
+        )
       )
     )
   )
@@ -136,7 +150,21 @@ test("QuerySupervisor times out pending submissions", async () => {
     ),
     Layer.provide(
       AgentSdk.layer.pipe(
-        Layer.provide(Layer.succeed(AgentSdkConfig, AgentSdkConfig.make({ options: {} })))
+        Layer.provide(
+          Layer.succeed(
+            AgentSdkConfig,
+            AgentSdkConfig.make({
+              options: {},
+              sandboxProvider: Option.some("local"),
+              sandboxId: Option.none(),
+              sandboxSleepAfter: Option.none(),
+              storageBackend: Option.some("bun"),
+              storageMode: Option.some("standard"),
+              r2BucketBinding: Option.some("BUCKET"),
+              kvNamespaceBinding: Option.some("KV")
+            })
+          )
+        )
       )
     )
   )
@@ -194,7 +222,21 @@ test("QuerySupervisor fails pending work when scope closes", async () => {
     ),
     Layer.provide(
       AgentSdk.layer.pipe(
-        Layer.provide(Layer.succeed(AgentSdkConfig, AgentSdkConfig.make({ options: {} })))
+        Layer.provide(
+          Layer.succeed(
+            AgentSdkConfig,
+            AgentSdkConfig.make({
+              options: {},
+              sandboxProvider: Option.some("local"),
+              sandboxId: Option.none(),
+              sandboxSleepAfter: Option.none(),
+              storageBackend: Option.some("bun"),
+              storageMode: Option.some("standard"),
+              r2BucketBinding: Option.some("BUCKET"),
+              kvNamespaceBinding: Option.some("KV")
+            })
+          )
+        )
       )
     )
   )
@@ -259,7 +301,21 @@ test("QuerySupervisor drops when queue is full", async () => {
     ),
     Layer.provide(
       AgentSdk.layer.pipe(
-        Layer.provide(Layer.succeed(AgentSdkConfig, AgentSdkConfig.make({ options: {} })))
+        Layer.provide(
+          Layer.succeed(
+            AgentSdkConfig,
+            AgentSdkConfig.make({
+              options: {},
+              sandboxProvider: Option.some("local"),
+              sandboxId: Option.none(),
+              sandboxSleepAfter: Option.none(),
+              storageBackend: Option.some("bun"),
+              storageMode: Option.some("standard"),
+              r2BucketBinding: Option.some("BUCKET"),
+              kvNamespaceBinding: Option.some("KV")
+            })
+          )
+        )
       )
     )
   )
@@ -340,7 +396,21 @@ test("QuerySupervisor publishes lifecycle events", async () => {
     ),
     Layer.provide(
       AgentSdk.layer.pipe(
-        Layer.provide(Layer.succeed(AgentSdkConfig, AgentSdkConfig.make({ options: {} })))
+        Layer.provide(
+          Layer.succeed(
+            AgentSdkConfig,
+            AgentSdkConfig.make({
+              options: {},
+              sandboxProvider: Option.some("local"),
+              sandboxId: Option.none(),
+              sandboxSleepAfter: Option.none(),
+              storageBackend: Option.some("bun"),
+              storageMode: Option.some("standard"),
+              r2BucketBinding: Option.some("BUCKET"),
+              kvNamespaceBinding: Option.some("KV")
+            })
+          )
+        )
       )
     )
   )

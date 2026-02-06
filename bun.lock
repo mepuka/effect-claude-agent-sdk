@@ -6,6 +6,7 @@
       "name": "effect-claude-agent-sdk",
       "dependencies": {
         "@anthropic-ai/claude-agent-sdk": "^0.2.29",
+        "@cloudflare/sandbox": ">=0.6.0",
         "@effect/cli": "^0.73.0",
         "@effect/experimental": "^0.58.0",
         "@effect/platform": "^0.94.1",
@@ -68,6 +69,10 @@
     "@changesets/types": ["@changesets/types@6.1.0", "", {}, "sha512-rKQcJ+o1nKNgeoYRHKOS07tAMNd3YSN0uHaJOZYjBAgxfV7TUE7JE+z4BzZdQwb5hKaYbayKN5KrYV7ODb2rAA=="],
 
     "@changesets/write": ["@changesets/write@0.4.0", "", { "dependencies": { "@changesets/types": "^6.1.0", "fs-extra": "^7.0.1", "human-id": "^4.1.1", "prettier": "^2.7.1" } }, "sha512-CdTLvIOPiCNuH71pyDu3rA+Q0n65cmAbXnwWH84rKGiFumFzkmHNT8KHTMEchcxN+Kl8I54xGUhJ7l3E7X396Q=="],
+
+    "@cloudflare/containers": ["@cloudflare/containers@0.0.30", "", {}, "sha512-i148xBgmyn/pje82ZIyuTr/Ae0BT/YWwa1/GTJcw6DxEjUHAzZLaBCiX446U9OeuJ2rBh/L/9FIzxX5iYNt1AQ=="],
+
+    "@cloudflare/sandbox": ["@cloudflare/sandbox@0.7.0", "", { "dependencies": { "@cloudflare/containers": "^0.0.30" }, "peerDependencies": { "@openai/agents": "^0.3.3", "@opencode-ai/sdk": "^1.0.137" }, "optionalPeers": ["@openai/agents", "@opencode-ai/sdk"] }, "sha512-U9e/fqc2R/epygMRoRFZxjM6z8ZSyJqQSFFykWTLWl2j+c9+kK9reBjp1G/RcvTAGtv8pH3Dac21jmvh4ZbGXg=="],
 
     "@cloudflare/workers-types": ["@cloudflare/workers-types@4.20260203.0", "", {}, "sha512-XD2uglpGbVppjXXLuAdalKkcTi/i4TyQSx0w/ijJbvrR1Cfm7zNkxtvFBNy3tBNxZOiFIJtw5bszifQB1eow6A=="],
 

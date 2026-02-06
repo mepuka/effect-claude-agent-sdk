@@ -74,10 +74,16 @@ maybeTest(
         const kv = Context.get(kvContext, KeyValueStore.KeyValueStore)
 
         const replicaAContext = yield* Layer.build(
-          makeReplicaLayer(remoteUrl!, kv, { prefix: "replica-a", protocols })
+          makeReplicaLayer(remoteUrl!, kv, {
+            prefix: "replica-a",
+            ...(protocols !== undefined ? { protocols } : {})
+          })
         )
         const replicaBContext = yield* Layer.build(
-          makeReplicaLayer(remoteUrl!, kv, { prefix: "replica-b", protocols })
+          makeReplicaLayer(remoteUrl!, kv, {
+            prefix: "replica-b",
+            ...(protocols !== undefined ? { protocols } : {})
+          })
         )
 
         const storeA = Context.get(replicaAContext, Storage.ChatHistoryStore)

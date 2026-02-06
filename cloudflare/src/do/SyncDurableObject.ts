@@ -17,22 +17,30 @@ class SyncStorageUnavailableError extends Schema.TaggedError<SyncStorageUnavaila
   }
 ) {}
 
-const makeStorageLayer = (ctx: DurableObjectState, env: SyncDoEnv) => {
-  return Layer.unwrapEffect(
+const unavailable = (message: string) =>
+  Effect.fail(
+    SyncStorageUnavailableError.make({
+      message
+    })
+  )
+
+const makeStorageLayer = (
+  ctx: DurableObjectState,
+  env: SyncDoEnv
+): Layer.Layer<EventLogServer.Storage, never, never> =>
+  Layer.unwrapEffect(
     Effect.gen(function*() {
       if (env.SYNC_STORAGE === "d1") {
         if (!env.SYNC_DB) {
-          return yield* SyncStorageUnavailableError.make({
-            message: "SYNC_STORAGE is 'd1' but SYNC_DB is not bound."
-          })
+          return yield* unavailable("SYNC_STORAGE is 'd1' but SYNC_DB is not bound.")
         }
         return layerStorageD1(env.SYNC_DB)
       }
       if (env.SYNC_STORAGE === "do") {
         if (!ctx.storage.sql) {
-          return yield* SyncStorageUnavailableError.make({
-            message: "SYNC_STORAGE is 'do' but Durable Object sqlite storage is not available."
-          })
+          return yield* unavailable(
+            "SYNC_STORAGE is 'do' but Durable Object sqlite storage is not available."
+          )
         }
         return layerStorageDo(ctx.storage.sql)
       }
@@ -40,15 +48,13 @@ const makeStorageLayer = (ctx: DurableObjectState, env: SyncDoEnv) => {
         return layerStorageD1(env.SYNC_DB)
       }
       if (!ctx.storage.sql) {
-        return yield* SyncStorageUnavailableError.make({
-          message:
-            "Sync storage unavailable. Bind SYNC_DB or enable durable_object_sqlite."
-        })
+        return yield* unavailable(
+          "Sync storage unavailable. Bind SYNC_DB or enable durable_object_sqlite."
+        )
       }
       return layerStorageDo(ctx.storage.sql)
-    })
+    }).pipe(Effect.orDie)
   )
-}
 
 export class SyncDurableObject extends EventLogDurableObject {
   private readonly debug: boolean
@@ -82,7 +88,7 @@ export class SyncDurableObject extends EventLogDurableObject {
     return super.fetch()
   }
 
-  override webSocketOpen(_ws: WebSocket) {
+  webSocketOpen(_ws: WebSocket) {
     if (this.debug) {
       const peers = this.ctx.getWebSockets().length
       console.log("[sync-do] WebSocket open", { peers })
@@ -117,7 +123,6 @@ export class SyncDurableObject extends EventLogDurableObject {
           }
           case "RequestChanges": {
             console.log("[sync-do] RequestChanges", {
-              id: request.id,
               publicKey: request.publicKey,
               startSequence: request.startSequence,
               peers: this.ctx.getWebSockets().length
@@ -125,27 +130,23 @@ export class SyncDurableObject extends EventLogDurableObject {
             break
           }
           case "ChunkedMessage": {
+            const [chunk, total] = request.part
             console.log("[sync-do] ChunkedMessage", {
               id: request.id,
-              chunk: request.chunk,
-              total: request.total,
+              chunk,
+              total,
               bytes: request.data.byteLength
             })
             break
           }
           case "StopChanges": {
             console.log("[sync-do] StopChanges", {
-              id: request.id,
               publicKey: request.publicKey
             })
             break
           }
           case "Ping": {
             console.log("[sync-do] Ping", { id: request.id })
-            break
-          }
-          default: {
-            console.log("[sync-do] Request", { tag: request._tag })
             break
           }
         }

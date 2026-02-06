@@ -4,6 +4,7 @@ import * as Duration from "effect/Duration"
 import * as Effect from "effect/Effect"
 import * as Either from "effect/Either"
 import * as Layer from "effect/Layer"
+import * as Option from "effect/Option"
 import { AgentRuntimeConfig } from "../src/AgentRuntimeConfig.js"
 import { AgentSdkConfig } from "../src/AgentSdkConfig.js"
 import { QuerySupervisorConfig } from "../src/QuerySupervisorConfig.js"
@@ -97,6 +98,34 @@ test("AgentSdkConfig reads sandbox settings from config provider", async () => {
     rg: ["line-too-long"],
     bash: ["unsafe-flag"]
   })
+})
+
+test("AgentSdkConfig reads deployment profile hints", async () => {
+  const layer = AgentSdkConfig.layer.pipe(
+    Layer.provide(
+      configLayer({
+        ANTHROPIC_API_KEY: "test-key",
+        SANDBOX_PROVIDER: "cloudflare",
+        SANDBOX_ID: "sandbox-123",
+        SANDBOX_SLEEP_AFTER: "15m",
+        STORAGE_BACKEND: "r2",
+        STORAGE_MODE: "journaled",
+        R2_BUCKET_BINDING: "ARTIFACTS_BUCKET",
+        KV_NAMESPACE_BINDING: "SESSIONS_KV"
+      })
+    )
+  )
+
+  const program = AgentSdkConfig.pipe(Effect.provide(layer))
+
+  const config = await runEffect(program)
+  expect(config.sandboxProvider).toEqual(Option.some("cloudflare"))
+  expect(config.sandboxId).toEqual(Option.some("sandbox-123"))
+  expect(config.sandboxSleepAfter).toEqual(Option.some("15m"))
+  expect(config.storageBackend).toEqual(Option.some("r2"))
+  expect(config.storageMode).toEqual(Option.some("journaled"))
+  expect(config.r2BucketBinding).toEqual(Option.some("ARTIFACTS_BUCKET"))
+  expect(config.kvNamespaceBinding).toEqual(Option.some("SESSIONS_KV"))
 })
 
 test("AgentSdkConfig rejects invalid setting sources", async () => {

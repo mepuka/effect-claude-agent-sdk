@@ -74,7 +74,7 @@ export const layerCloudflare = (
       // getSandbox returns synchronously (lazy container start on first operation).
       // parseSSEStream converts execStream's ReadableStream into AsyncIterable<T>.
       const { getSandbox, parseSSEStream } = yield* Effect.tryPromise({
-        try: () => import("@cloudflare/sandbox") as Promise<{
+        try: () => import("@cloudflare/sandbox") as unknown as Promise<{
           getSandbox: (binding: unknown, id: string, opts?: {
             sleepAfter?: string | number
             keepAlive?: boolean

@@ -13,6 +13,9 @@ import { PermissionMode } from "./Schema/Permission.js"
 import { SandboxIgnoreViolations } from "./Schema/Sandbox.js"
 
 const SettingSourcesSchema = Schema.Array(SettingSource)
+const SandboxProviderSchema = Schema.Literal("local", "cloudflare")
+const StorageBackendSchema = Schema.Literal("bun", "filesystem", "r2", "kv")
+const StorageModeSchema = Schema.Literal("standard", "journaled")
 
 const parseSettingSources = (value: string) =>
   Schema.decodeUnknown(SettingSourcesSchema)(
@@ -120,6 +123,19 @@ const makeAgentSdkConfig = Effect.gen(function*() {
   const sandboxRipgrepArgsValue = yield* Config.option(
     Config.string("SANDBOX_RIPGREP_ARGS")
   )
+  const sandboxProviderValue = yield* Config.option(
+    Schema.Config("SANDBOX_PROVIDER", SandboxProviderSchema)
+  )
+  const sandboxId = yield* Config.option(Config.string("SANDBOX_ID"))
+  const sandboxSleepAfter = yield* Config.option(Config.string("SANDBOX_SLEEP_AFTER"))
+  const storageBackendValue = yield* Config.option(
+    Schema.Config("STORAGE_BACKEND", StorageBackendSchema)
+  )
+  const storageModeValue = yield* Config.option(
+    Schema.Config("STORAGE_MODE", StorageModeSchema)
+  )
+  const r2BucketBindingValue = yield* Config.option(Config.string("R2_BUCKET_BINDING"))
+  const kvNamespaceBindingValue = yield* Config.option(Config.string("KV_NAMESPACE_BINDING"))
   const settingSources = Option.isSome(settingSourcesValue)
     ? yield* parseSettingSources(settingSourcesValue.value)
     : defaultSettingSources
@@ -257,7 +273,32 @@ const makeAgentSdkConfig = Effect.gen(function*() {
     ...(sandbox ? { sandbox } : {})
   }
 
-  return { options }
+  const sandboxProvider = Option.isSome(sandboxProviderValue)
+    ? sandboxProviderValue
+    : Option.some("local")
+  const storageBackend = Option.isSome(storageBackendValue)
+    ? storageBackendValue
+    : Option.some("bun")
+  const storageMode = Option.isSome(storageModeValue)
+    ? storageModeValue
+    : Option.some("standard")
+  const r2BucketBinding = Option.isSome(r2BucketBindingValue)
+    ? r2BucketBindingValue
+    : Option.some("BUCKET")
+  const kvNamespaceBinding = Option.isSome(kvNamespaceBindingValue)
+    ? kvNamespaceBindingValue
+    : Option.some("KV")
+
+  return {
+    options,
+    sandboxProvider,
+    sandboxId,
+    sandboxSleepAfter,
+    storageBackend,
+    storageMode,
+    r2BucketBinding,
+    kvNamespaceBinding
+  }
 })
 
 export class AgentSdkConfig extends Effect.Service<AgentSdkConfig>()(

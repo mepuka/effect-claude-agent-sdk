@@ -2,6 +2,7 @@ import { expect, mock, test } from "bun:test"
 import * as Duration from "effect/Duration"
 import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
+import * as Option from "effect/Option"
 import * as TestClock from "effect/TestClock"
 import { runEffect } from "./effect-test.js"
 import type { AgentRuntimeSettings } from "../src/AgentRuntimeConfig.js"
@@ -80,7 +81,21 @@ test("AgentRuntime interrupts queries on timeout", async () => {
     ),
     Layer.provide(
       AgentSdk.layer.pipe(
-        Layer.provide(Layer.succeed(AgentSdkConfig, AgentSdkConfig.make({ options: {} })))
+        Layer.provide(
+          Layer.succeed(
+            AgentSdkConfig,
+            AgentSdkConfig.make({
+              options: {},
+              sandboxProvider: Option.some("local"),
+              sandboxId: Option.none(),
+              sandboxSleepAfter: Option.none(),
+              storageBackend: Option.some("bun"),
+              storageMode: Option.some("standard"),
+              r2BucketBinding: Option.some("BUCKET"),
+              kvNamespaceBinding: Option.some("KV")
+            })
+          )
+        )
       )
     )
   )

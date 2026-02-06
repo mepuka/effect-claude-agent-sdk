@@ -8,6 +8,8 @@ import { ArtifactStore } from "./ArtifactStore.js"
 import { AuditEventStore } from "./AuditEventStore.js"
 import { ChatHistoryStore } from "./ChatHistoryStore.js"
 import { SessionIndexStore } from "./SessionIndexStore.js"
+import { type KVNamespace, layerKV } from "./StorageKV.js"
+import { type R2Bucket, layerR2 } from "./StorageR2.js"
 import { defaultStorageDirectory } from "./defaults.js"
 import type { ConflictPolicy } from "../Sync/ConflictPolicy.js"
 import { SyncConfig, SyncService } from "../Sync/SyncService.js"
@@ -16,8 +18,13 @@ export type StorageLayerOptions = {
   readonly directory?: string
 }
 
-export type StorageBackend = "filesystem" | "bun"
+export type StorageBackend = "filesystem" | "bun" | "r2" | "kv"
 export type StorageMode = "standard" | "journaled"
+
+export type CloudflareStorageBindings = {
+  readonly r2Bucket?: R2Bucket
+  readonly kvNamespace?: KVNamespace
+}
 
 export type StorageLayers<E = unknown, R = unknown> = {
   readonly chatHistory: Layer.Layer<ChatHistoryStore, E, R>
@@ -48,6 +55,7 @@ export type StorageLayerBundleOptions<R = never> = StorageLayerOptions & {
   readonly backend?: StorageBackend
   readonly mode?: StorageMode
   readonly sync?: StorageSyncOptions<R>
+  readonly bindings?: CloudflareStorageBindings
 }
 
 const resolveDirectory = (directory: string | undefined) =>
@@ -83,6 +91,20 @@ const resolveLayers = (
       : SessionIndexStore.layerFileSystem(directory)
   }
 }
+
+const resolveLayersFromKvs = <R>(
+  kvsLayer: Layer.Layer<KeyValueStore.KeyValueStore, unknown, R>,
+  mode: StorageMode
+): StorageLayers<unknown, R> => ({
+  chatHistory: mode === "journaled"
+    ? ChatHistoryStore.layerJournaled().pipe(Layer.provide(kvsLayer))
+    : ChatHistoryStore.layerKeyValueStore().pipe(Layer.provide(kvsLayer)),
+  artifacts: mode === "journaled"
+    ? ArtifactStore.layerJournaled().pipe(Layer.provide(kvsLayer))
+    : ArtifactStore.layerKeyValueStore().pipe(Layer.provide(kvsLayer)),
+  auditLog: AuditEventStore.layerKeyValueStore().pipe(Layer.provide(kvsLayer)),
+  sessionIndex: SessionIndexStore.layerKeyValueStore().pipe(Layer.provide(kvsLayer))
+})
 
 const mergeLayers = <E, R>(layers: StorageLayers<E, R>) =>
   Layer.mergeAll(
@@ -278,6 +300,15 @@ export function layers(
   options: StorageLayerBundleOptions & { readonly backend: "filesystem" }
 ): StorageLayersWithSync<unknown, FileSystem | Path>
 export function layers(
+  options: StorageLayerBundleOptions & { readonly backend: "r2" }
+): StorageLayersWithSync<unknown, never>
+export function layers(
+  options: StorageLayerBundleOptions & { readonly backend: "kv" }
+): StorageLayersWithSync<unknown, never>
+export function layers(
+  options?: StorageLayerBundleOptions
+): StorageLayersWithSync<unknown, never> | StorageLayersWithSync<unknown, FileSystem | Path>
+export function layers(
   options: StorageLayerBundleOptions = {}
 ): StorageLayersWithSync<unknown, never> | StorageLayersWithSync<unknown, FileSystem | Path> {
   const backend = options.backend ?? "bun"
@@ -298,6 +329,37 @@ export function layers(
       : (layersFileSystemBun(
           directory !== undefined ? { directory } : undefined
         ) as StorageLayersWithSync<unknown, never>)
+  }
+
+  if (backend === "r2") {
+    if (!options.bindings?.r2Bucket) {
+      throw new Error("StorageLayers: backend 'r2' requires bindings.r2Bucket")
+    }
+    if (options.sync) {
+      throw new Error(
+        "StorageLayers: 'sync' is not yet supported with backend 'r2'. Use backend 'bun' or 'filesystem' for sync-enabled storage."
+      )
+    }
+    const kvsLayer = layerR2(options.bindings.r2Bucket)
+    return resolveLayersFromKvs(kvsLayer, mode) as StorageLayersWithSync<unknown, never>
+  }
+
+  if (backend === "kv") {
+    if (!options.bindings?.kvNamespace) {
+      throw new Error("StorageLayers: backend 'kv' requires bindings.kvNamespace")
+    }
+    if (options.sync) {
+      throw new Error(
+        "StorageLayers: 'sync' is not yet supported with backend 'kv'. Use backend 'bun' or 'filesystem' for sync-enabled storage."
+      )
+    }
+    if (mode === "journaled") {
+      throw new Error(
+        "StorageLayers: backend 'kv' cannot be used with mode 'journaled'. KV's 1 write/sec/key limit is incompatible with EventLog write patterns."
+      )
+    }
+    const kvsLayer = layerKV(options.bindings.kvNamespace)
+    return resolveLayersFromKvs(kvsLayer, mode) as StorageLayersWithSync<unknown, never>
   }
 
   if (options.sync) {

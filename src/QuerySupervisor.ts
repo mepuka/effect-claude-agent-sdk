@@ -6,6 +6,7 @@ import * as Exit from "effect/Exit"
 import * as Layer from "effect/Layer"
 import * as Metric from "effect/Metric"
 import * as MetricBoundaries from "effect/MetricBoundaries"
+import * as Option from "effect/Option"
 import * as PubSub from "effect/PubSub"
 import * as Queue from "effect/Queue"
 import * as Schema from "effect/Schema"
@@ -15,10 +16,13 @@ import * as SynchronizedRef from "effect/SynchronizedRef"
 import { AgentSdk } from "./AgentSdk.js"
 import type { AgentSdkError } from "./Errors.js"
 import type { QueryHandle } from "./Query.js"
-import type { SDKMessage, SDKUserMessage } from "./Schema/Message.js"
+import type { HookInput } from "./Schema/Hooks.js"
+import type { SDKUserMessage } from "./Schema/Message.js"
 import type { Options } from "./Schema/Options.js"
 import { QuerySupervisorConfig } from "./QuerySupervisorConfig.js"
 import type { PendingQueueStrategy } from "./QuerySupervisorConfig.js"
+import { SandboxError } from "./Sandbox/SandboxError.js"
+import { SandboxService } from "./Sandbox/SandboxService.js"
 
 const CompletionStatus = Schema.Literal("success", "failure", "interrupted")
 
@@ -184,6 +188,157 @@ const exitStatus = (exit: Exit.Exit<unknown, unknown>) => {
   return "success" as const
 }
 
+const stripNonSerializableOptions = (options: Options): Options => {
+  const {
+    hooks,
+    canUseTool,
+    stderr,
+    spawnClaudeCodeProcess,
+    abortController,
+    ...rest
+  } = options
+  return rest as Options
+}
+
+const toHookMatcherRegex = (matcher: string) =>
+  new RegExp(`^${matcher.replace(/[.+^${}()|[\]\\]/g, "\\$&").replaceAll("*", ".*")}$`)
+
+const hookMatcherAllowsInput = (matcher: string | undefined, input: HookInput) => {
+  if (!matcher || matcher === "*") return true
+  if ("tool_name" in input) {
+    return toHookMatcherRegex(matcher).test(input.tool_name)
+  }
+  return true
+}
+
+const applySandboxHooks = (handle: QueryHandle, options?: Options): QueryHandle => {
+  const hooks = options?.hooks
+  if (!hooks || Object.keys(hooks).length === 0) return handle
+
+  const baseCwd = options?.cwd ?? ""
+  const basePermissionMode = options?.permissionMode
+
+  const makeBaseInput = (sessionId: string) => ({
+    session_id: sessionId,
+    transcript_path: "",
+    cwd: baseCwd,
+    ...(basePermissionMode ? { permission_mode: basePermissionMode } : {})
+  })
+
+  const runHookEvent = (
+    event: keyof NonNullable<Options["hooks"]>,
+    input: HookInput,
+    toolUseID?: string
+  ) =>
+    Effect.forEach(hooks[event] ?? [], (matcherEntry) => {
+      if (!hookMatcherAllowsInput(matcherEntry.matcher, input)) {
+        return Effect.void
+      }
+      return Effect.forEach(matcherEntry.hooks, (hook) =>
+        Effect.tryPromise({
+          try: () => hook(input, toolUseID, { signal: new AbortController().signal }),
+          catch: () => undefined
+        }).pipe(Effect.ignore), { discard: true })
+    }, { discard: true })
+
+  let sessionStarted = false
+  const toolNames = new Map<string, string>()
+  const preToolFired = new Set<string>()
+  const completedToolUseIds = new Set<string>()
+
+  const stream = handle.stream.pipe(
+    Stream.tap((message) =>
+      Effect.gen(function*() {
+        if (!sessionStarted) {
+          sessionStarted = true
+          const input = {
+            ...makeBaseInput(message.session_id),
+            hook_event_name: "SessionStart",
+            source: "startup",
+            model: options?.model
+          } as HookInput
+          yield* runHookEvent("SessionStart", input).pipe(Effect.ignore)
+        }
+
+        if (message.type === "tool_progress") {
+          toolNames.set(message.tool_use_id, message.tool_name)
+          if (!preToolFired.has(message.tool_use_id)) {
+            preToolFired.add(message.tool_use_id)
+            const input = {
+              ...makeBaseInput(message.session_id),
+              hook_event_name: "PreToolUse",
+              tool_name: message.tool_name,
+              tool_input: {},
+              tool_use_id: message.tool_use_id
+            } as HookInput
+            yield* runHookEvent("PreToolUse", input, message.tool_use_id).pipe(Effect.ignore)
+          }
+        }
+
+        if (
+          message.type === "user" &&
+          message.parent_tool_use_id !== null &&
+          message.tool_use_result !== undefined
+        ) {
+          const toolUseId = message.parent_tool_use_id
+          completedToolUseIds.add(toolUseId)
+          const input = {
+            ...makeBaseInput(message.session_id),
+            hook_event_name: "PostToolUse",
+            tool_name: toolNames.get(toolUseId) ?? "unknown",
+            tool_input: {},
+            tool_response: message.tool_use_result,
+            tool_use_id: toolUseId
+          } as HookInput
+          yield* runHookEvent("PostToolUse", input, toolUseId).pipe(Effect.ignore)
+        }
+
+        if (message.type === "result") {
+          if (message.subtype !== "success") {
+            const fallbackError = `Sandbox query failed with ${message.subtype}`
+            const errorMessage =
+              "errors" in message && message.errors.length > 0
+                ? message.errors[0]!
+                : fallbackError
+            for (const toolUseId of preToolFired) {
+              if (completedToolUseIds.has(toolUseId)) continue
+              completedToolUseIds.add(toolUseId)
+              const input = {
+                ...makeBaseInput(message.session_id),
+                hook_event_name: "PostToolUseFailure",
+                tool_name: toolNames.get(toolUseId) ?? "unknown",
+                tool_input: {},
+                tool_use_id: toolUseId,
+                error: errorMessage
+              } as HookInput
+              yield* runHookEvent("PostToolUseFailure", input, toolUseId).pipe(Effect.ignore)
+            }
+
+            const stopInput = {
+              ...makeBaseInput(message.session_id),
+              hook_event_name: "Stop",
+              stop_hook_active: false
+            } as HookInput
+            yield* runHookEvent("Stop", stopInput).pipe(Effect.ignore)
+          }
+
+          const input = {
+            ...makeBaseInput(message.session_id),
+            hook_event_name: "SessionEnd",
+            reason: "other"
+          } as HookInput
+          yield* runHookEvent("SessionEnd", input).pipe(Effect.ignore)
+        }
+      })
+    )
+  )
+
+  return {
+    ...handle,
+    stream
+  }
+}
+
 const makeQuerySupervisor = Effect.gen(function*() {
   const { settings } = yield* QuerySupervisorConfig
   const sdk = yield* AgentSdk
@@ -229,12 +384,38 @@ const makeQuerySupervisor = Effect.gen(function*() {
       return next
     })
 
+  const dispatchQuery = (
+    prompt: string | AsyncIterable<SDKUserMessage>,
+    options?: Options
+  ): Effect.Effect<QueryHandle, AgentSdkError, Scope.Scope> =>
+    Effect.flatMap(Effect.serviceOption(SandboxService), (sandboxOption) => {
+      if (Option.isSome(sandboxOption) && sandboxOption.value.isolated) {
+        if (typeof prompt !== "string") {
+          return Effect.fail(
+            SandboxError.make({
+              message:
+                "Sandbox queries only support string prompts. AsyncIterable<SDKUserMessage> cannot cross the sandbox boundary.",
+              operation: "dispatchQuery",
+              provider: sandboxOption.value.provider
+            })
+          )
+        }
+        return sandboxOption.value.runAgent(prompt, options ? stripNonSerializableOptions(options) : options).pipe(
+          Effect.map((handle) => applySandboxHooks(handle, options)),
+          Effect.mapError((error): AgentSdkError => error)
+        )
+      }
+      return sdk.query(prompt, options).pipe(
+        Effect.mapError((error): AgentSdkError => error)
+      )
+    })
+
   const startQuery = (request: QueryRequest) => {
     const effect = Effect.uninterruptibleMask((restore) =>
       Effect.gen(function*() {
         yield* restore(semaphore.take(1))
         const handle = yield* restore(
-          sdk.query(request.prompt, request.options).pipe(Scope.extend(request.scope))
+          dispatchQuery(request.prompt, request.options).pipe(Scope.extend(request.scope))
         ).pipe(
           Effect.onError(() => semaphore.release(1))
         )

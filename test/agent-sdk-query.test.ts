@@ -2,6 +2,7 @@ import { test, expect, mock } from "bun:test"
 import * as Effect from "effect/Effect"
 import * as Either from "effect/Either"
 import * as Layer from "effect/Layer"
+import * as Option from "effect/Option"
 import * as Stream from "effect/Stream"
 import { runEffect } from "./effect-test.js"
 
@@ -44,7 +45,21 @@ test("AgentSdk.query surfaces failures from streaming prompt", async () => {
   }
 
   const layer = AgentSdk.layer.pipe(
-    Layer.provide(Layer.succeed(AgentSdkConfig, AgentSdkConfig.make({ options: {} })))
+    Layer.provide(
+      Layer.succeed(
+        AgentSdkConfig,
+        AgentSdkConfig.make({
+          options: {},
+          sandboxProvider: Option.some("local"),
+          sandboxId: Option.none(),
+          sandboxSleepAfter: Option.none(),
+          storageBackend: Option.some("bun"),
+          storageMode: Option.some("standard"),
+          r2BucketBinding: Option.some("BUCKET"),
+          kvNamespaceBinding: Option.some("KV")
+        })
+      )
+    )
   )
 
   const program = Effect.scoped(
@@ -72,7 +87,21 @@ test("AgentSdk.query closeInput does not fail output stream", async () => {
   }
 
   const layer = AgentSdk.layer.pipe(
-    Layer.provide(Layer.succeed(AgentSdkConfig, AgentSdkConfig.make({ options: {} })))
+    Layer.provide(
+      Layer.succeed(
+        AgentSdkConfig,
+        AgentSdkConfig.make({
+          options: {},
+          sandboxProvider: Option.some("local"),
+          sandboxId: Option.none(),
+          sandboxSleepAfter: Option.none(),
+          storageBackend: Option.some("bun"),
+          storageMode: Option.some("standard"),
+          r2BucketBinding: Option.some("BUCKET"),
+          kvNamespaceBinding: Option.some("KV")
+        })
+      )
+    )
   )
 
   const program = Effect.scoped(
