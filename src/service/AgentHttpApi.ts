@@ -13,7 +13,8 @@ import {
   SessionCreateInput,
   SessionCreateOutput,
   SessionInfo,
-  SessionSendInput
+  SessionSendInput,
+  Tenant
 } from "../Schema/Service.js"
 import { AgentServiceError } from "./AgentRpcs.js"
 import { SessionServiceError } from "./SessionErrors.js"
@@ -69,12 +70,13 @@ class AgentHttpGroup extends HttpApiGroup.make("agent", { topLevel: true })
   )
   .add(
     HttpApiEndpoint.get("listSessions", "/sessions")
+      .setUrlParams(Schema.Struct({ tenant: Schema.optional(Tenant) }))
       .addSuccess(Schema.Array(SessionInfo))
       .addError(SessionServiceError)
   )
   .add(
     HttpApiEndpoint.get("getSession", "/sessions/:id")
-      .setUrlParams(Schema.Struct({ id: Schema.String }))
+      .setUrlParams(Schema.Struct({ id: Schema.String, tenant: Schema.optional(Tenant) }))
       .addSuccess(SessionInfo)
       .addError(SessionServiceError)
   )
@@ -87,13 +89,13 @@ class AgentHttpGroup extends HttpApiGroup.make("agent", { topLevel: true })
   )
   .add(
     HttpApiEndpoint.get("streamSession", "/sessions/:id/stream")
-      .setUrlParams(Schema.Struct({ id: Schema.String }))
+      .setUrlParams(Schema.Struct({ id: Schema.String, tenant: Schema.optional(Tenant) }))
       .addSuccess(Schema.String)
       .addError(SessionServiceError)
   )
   .add(
     HttpApiEndpoint.del("closeSession", "/sessions/:id")
-      .setUrlParams(Schema.Struct({ id: Schema.String }))
+      .setUrlParams(Schema.Struct({ id: Schema.String, tenant: Schema.optional(Tenant) }))
       .addSuccess(HttpApiSchema.NoContent)
       .addError(SessionServiceError)
   )

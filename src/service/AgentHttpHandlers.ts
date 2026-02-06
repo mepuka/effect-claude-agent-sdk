@@ -134,30 +134,30 @@ export const layer = HttpApiBuilder.group(AgentHttpApi, "agent", (handlers) =>
       .handle("account", () => withProbeHandle(runtime, (handle) => handle.accountInfo))
       .handle("createSession", ({ payload }) =>
         requirePool((pool) =>
-          pool.create(payload.options).pipe(
+          pool.create(payload.options, payload.tenant).pipe(
             Effect.flatMap((handle) => handle.sessionId),
             Effect.map((sessionId) => ({ sessionId }))
           )
         ))
-      .handle("listSessions", () =>
-        requirePool((pool) => pool.list)
+      .handle("listSessions", ({ urlParams }) =>
+        requirePool((pool) => pool.listByTenant(urlParams.tenant))
       )
       .handle("getSession", ({ urlParams }) =>
         requirePool((pool) =>
-          pool.get(urlParams.id).pipe(
-            Effect.zipRight(pool.info(urlParams.id))
+          pool.get(urlParams.id, undefined, urlParams.tenant).pipe(
+            Effect.zipRight(pool.info(urlParams.id, urlParams.tenant))
           )
         ))
       .handle("sendSession", ({ urlParams, payload }) =>
         requirePool((pool) =>
-          pool.get(urlParams.id).pipe(
+          pool.get(urlParams.id, undefined, payload.tenant).pipe(
             Effect.flatMap((handle) => handle.send(payload.message)),
             Effect.asVoid
           )
         ))
       .handleRaw("streamSession", ({ urlParams }) =>
         requirePool((pool) =>
-          pool.get(urlParams.id).pipe(
+          pool.get(urlParams.id, undefined, urlParams.tenant).pipe(
             Effect.map((handle) =>
               HttpServerResponse.stream(
                 toSseStream(handle.stream),
@@ -173,7 +173,7 @@ export const layer = HttpApiBuilder.group(AgentHttpApi, "agent", (handlers) =>
           )
         ))
       .handle("closeSession", ({ urlParams }) =>
-        requirePool((pool) => pool.close(urlParams.id).pipe(Effect.asVoid))
+        requirePool((pool) => pool.close(urlParams.id, urlParams.tenant).pipe(Effect.asVoid))
       )
   })
 )

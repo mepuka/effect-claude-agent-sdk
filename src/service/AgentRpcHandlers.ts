@@ -7,14 +7,27 @@ import { collectResultSuccess } from "../QueryResult.js"
 import type { QueryHandle } from "../Query.js"
 import type { AgentSdkError } from "../Errors.js"
 import type { SDKUserMessage } from "../Schema/Message.js"
-import type { SDKSessionOptions } from "../Schema/Session.js"
-import type { QueryInput as QueryInputType } from "../Schema/Service.js"
+import type {
+  QueryInput as QueryInputType,
+  SessionCreateInput as SessionCreateInputType,
+  SessionSendInput as SessionSendInputType
+} from "../Schema/Service.js"
 import type { QuerySupervisorError } from "../QuerySupervisor.js"
 import { SessionPool } from "../SessionPool.js"
 import { AgentRpcs } from "./AgentRpcs.js"
 import { SessionPoolUnavailableError } from "./SessionErrors.js"
 
 type SessionPoolService = Context.Tag.Service<typeof SessionPool>
+type TenantScopedInput = { readonly tenant?: string | undefined }
+type ResumeSessionInput = TenantScopedInput & {
+  readonly sessionId: string
+  readonly options: SessionCreateInputType["options"]
+}
+type SendSessionInput = TenantScopedInput & {
+  readonly sessionId: string
+  readonly message: SessionSendInputType["message"]
+}
+type SessionRefInput = TenantScopedInput & { readonly sessionId: string }
 
 const toAsyncIterable = (messages: ReadonlyArray<SDKUserMessage>): AsyncIterable<SDKUserMessage> => ({
   async *[Symbol.asyncIterator]() {
@@ -88,46 +101,49 @@ export const layer = AgentRpcs.toLayer(
     const AccountInfo = () =>
       withProbeHandle(runtime, (handle) => handle.accountInfo)
 
-    const CreateSession = (input: { readonly options: SDKSessionOptions }) =>
+    const CreateSession = (input: SessionCreateInputType) =>
       requirePool((pool) =>
-        pool.create(input.options).pipe(
+        pool.create(input.options, input.tenant).pipe(
           Effect.flatMap((handle) => handle.sessionId),
           Effect.map((sessionId) => ({ sessionId }))
         )
       )
 
-    const ResumeSession = (input: { readonly sessionId: string; readonly options: SDKSessionOptions }) =>
+    const ResumeSession = (input: ResumeSessionInput) =>
       requirePool((pool) =>
-        pool.get(input.sessionId, input.options).pipe(
+        pool.get(input.sessionId, input.options, input.tenant).pipe(
           Effect.flatMap((handle) => handle.sessionId),
           Effect.map((sessionId) => ({ sessionId }))
         )
       )
 
-    const SendSession = (input: { readonly sessionId: string; readonly message: string | SDKUserMessage }) =>
+    const SendSession = (input: SendSessionInput) =>
       requirePool((pool) =>
-        pool.get(input.sessionId).pipe(
+        pool.get(input.sessionId, undefined, input.tenant).pipe(
           Effect.flatMap((handle) => handle.send(input.message)),
           Effect.asVoid
         )
       )
 
-    const SessionStream = (input: { readonly sessionId: string }) =>
+    const SessionStream = (input: SessionRefInput) =>
       Stream.unwrap(
         requirePool((pool) =>
-          pool.get(input.sessionId).pipe(
+          pool.get(input.sessionId, undefined, input.tenant).pipe(
             Effect.map((handle) => handle.stream)
           )
         )
       )
 
-    const CloseSession = (input: { readonly sessionId: string }) =>
+    const CloseSession = (input: SessionRefInput) =>
       requirePool((pool) =>
-        pool.close(input.sessionId).pipe(Effect.asVoid)
+        pool.close(input.sessionId, input.tenant).pipe(Effect.asVoid)
       )
 
     const ListSessions = () =>
       requirePool((pool) => pool.list)
+
+    const ListSessionsByTenant = (input: TenantScopedInput) =>
+      requirePool((pool) => pool.listByTenant(input.tenant))
 
     return {
       QueryStream,
@@ -142,6 +158,7 @@ export const layer = AgentRpcs.toLayer(
       SendSession,
       SessionStream,
       CloseSession,
+      ListSessionsByTenant,
       ListSessions
     }
   })

@@ -20,10 +20,11 @@ export type SessionPoolOptions = {
   readonly sessionOptions?: Omit<SDKSessionOptions, "model">
   readonly maxSessions?: number
   readonly idleTimeout?: Duration.DurationInput
-  readonly onSessionCreated?: (sessionId: string) => Effect.Effect<void>
+  readonly onSessionCreated?: (sessionId: string, tenant?: string) => Effect.Effect<void>
   readonly onSessionClosed?: (
     sessionId: string,
-    reason: SessionPoolCloseReason
+    reason: SessionPoolCloseReason,
+    tenant?: string
   ) => Effect.Effect<void>
 }
 
@@ -43,23 +44,63 @@ export class SessionPoolNotFoundError extends Schema.TaggedError<SessionPoolNotF
   }
 ) {}
 
-export const SessionPoolError = Schema.Union(SessionPoolFullError, SessionPoolNotFoundError)
+export class SessionPoolInvalidTenantError extends Schema.TaggedError<SessionPoolInvalidTenantError>()(
+  "SessionPoolInvalidTenantError",
+  {
+    message: Schema.String,
+    tenant: Schema.String
+  }
+) {}
+
+export const SessionPoolError = Schema.Union(
+  SessionPoolFullError,
+  SessionPoolNotFoundError,
+  SessionPoolInvalidTenantError
+)
 
 export type SessionPoolError = typeof SessionPoolError.Type
 export type SessionPoolErrorEncoded = typeof SessionPoolError.Encoded
 
 export type SessionInfo = {
   readonly sessionId: string
+  readonly tenant?: string
   readonly createdAt: number
   readonly lastUsedAt: number
 }
 
 type SessionEntry = {
+  readonly sessionId: string
+  readonly tenant?: string
   readonly handle: SessionHandle
   readonly scope: Scope.CloseableScope
   readonly createdAt: number
   readonly lastUsedAt: number
 }
+
+const tenantPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
+const defaultTenantScope = "__default__"
+
+const resolveTenant = (
+  tenant: string | undefined
+): Effect.Effect<string | undefined, SessionPoolInvalidTenantError> =>
+  tenant === undefined || tenantPattern.test(tenant)
+    ? Effect.succeed(tenant)
+    : Effect.fail(
+        SessionPoolInvalidTenantError.make({
+          message: "Invalid tenant format. Expected /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.",
+          tenant
+        })
+      )
+
+const sessionKey = (sessionId: string, tenant: string | undefined) =>
+  `${tenant ?? defaultTenantScope}\u0000${sessionId}`
+
+const toInfo = (entry: SessionEntry): SessionInfo => ({
+  sessionId: entry.sessionId,
+  ...(entry.tenant !== undefined ? { tenant: entry.tenant } : {}),
+  createdAt: entry.createdAt,
+  lastUsedAt: entry.lastUsedAt
+})
 
 const resolveOptions = (
   options: SessionPoolOptions,
@@ -83,37 +124,54 @@ const makeSessionPool = (options: SessionPoolOptions) =>
     const withLock = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       lock.withPermits(1)(effect)
 
-    const touch = (sessionId: string) =>
+    const touchResolved = (sessionId: string, tenant: string | undefined) =>
       withLock(
         Effect.gen(function*() {
           const now = yield* Clock.currentTimeMillis
           const sessions = yield* Ref.get(sessionsRef)
-          const entry = sessions.get(sessionId)
+          const key = sessionKey(sessionId, tenant)
+          const entry = sessions.get(key)
           if (!entry) return
-          sessions.set(sessionId, { ...entry, lastUsedAt: now })
+          sessions.set(key, { ...entry, lastUsedAt: now })
         })
       )
 
-    const closeEntry = (
+    const touch = (sessionId: string, tenant?: string) =>
+      resolveTenant(tenant).pipe(
+        Effect.flatMap((resolvedTenant) => touchResolved(sessionId, resolvedTenant))
+      )
+
+    const closeEntryResolved = (
       sessionId: string,
-      reason: SessionPoolCloseReason
+      reason: SessionPoolCloseReason,
+      tenant: string | undefined
     ): Effect.Effect<void, SessionError | SessionPoolNotFoundError> =>
       withLock(
         Effect.gen(function*() {
           const sessions = yield* Ref.get(sessionsRef)
-          const entry = sessions.get(sessionId)
+          const key = sessionKey(sessionId, tenant)
+          const entry = sessions.get(key)
           if (!entry) {
             return yield* SessionPoolNotFoundError.make({
               message: "Session not found",
               sessionId
             })
           }
-          sessions.delete(sessionId)
+          sessions.delete(key)
           yield* Scope.close(entry.scope, Exit.succeed(undefined))
           if (options.onSessionClosed) {
-            yield* options.onSessionClosed(sessionId, reason)
+            yield* options.onSessionClosed(sessionId, reason, tenant)
           }
         })
+      )
+
+    const closeEntry = (
+      sessionId: string,
+      reason: SessionPoolCloseReason,
+      tenant?: string
+    ): Effect.Effect<void, SessionError | SessionPoolNotFoundError | SessionPoolInvalidTenantError> =>
+      resolveTenant(tenant).pipe(
+        Effect.flatMap((resolvedTenant) => closeEntryResolved(sessionId, reason, resolvedTenant))
       )
 
     const ensureCapacity = withLock(
@@ -127,37 +185,39 @@ const makeSessionPool = (options: SessionPoolOptions) =>
       })
     )
 
-    const wrapHandle = (sessionId: string, entry: SessionEntry): SessionHandle => ({
+    const wrapHandle = (entry: SessionEntry): SessionHandle => ({
       sessionId: entry.handle.sessionId,
       send: (message) =>
         entry.handle.send(message).pipe(
-          Effect.tap(() => touch(sessionId))
+          Effect.tap(() => touchResolved(entry.sessionId, entry.tenant))
         ),
       stream: entry.handle.stream.pipe(
-        Stream.tap(() => touch(sessionId))
+        Stream.tap(() => touchResolved(entry.sessionId, entry.tenant))
       ),
-      close: closeEntry(sessionId, "manual").pipe(
+      close: closeEntryResolved(entry.sessionId, "manual", entry.tenant).pipe(
         Effect.catchTag("SessionPoolNotFoundError", () => Effect.void)
       )
     })
 
     const storeEntry = (
-      sessionId: string,
+      key: string,
       entry: SessionEntry
     ) =>
       withLock(
         Effect.gen(function*() {
           const sessions = yield* Ref.get(sessionsRef)
-          sessions.set(sessionId, entry)
+          sessions.set(key, entry)
           if (options.onSessionCreated) {
-            yield* options.onSessionCreated(sessionId)
+            yield* options.onSessionCreated(entry.sessionId, entry.tenant)
           }
         })
       )
 
     const create = Effect.fn("SessionPool.create")(function*(
-      overrides?: Partial<SDKSessionOptions>
+      overrides?: Partial<SDKSessionOptions>,
+      tenant?: string
     ) {
+      const resolvedTenant = yield* resolveTenant(tenant)
       yield* ensureCapacity
       const scope = yield* Scope.make()
       const handle = yield* Scope.extend(
@@ -167,27 +227,32 @@ const makeSessionPool = (options: SessionPoolOptions) =>
       const sessionId = yield* handle.sessionId
       const now = yield* Clock.currentTimeMillis
       const entry: SessionEntry = {
+        sessionId,
+        ...(resolvedTenant !== undefined ? { tenant: resolvedTenant } : {}),
         handle,
         scope,
         createdAt: now,
         lastUsedAt: now
       }
-      yield* storeEntry(sessionId, entry)
-      return wrapHandle(sessionId, entry)
+      yield* storeEntry(sessionKey(sessionId, resolvedTenant), entry)
+      return wrapHandle(entry)
     })
 
     const get = Effect.fn("SessionPool.get")(function*(
       sessionId: string,
-      overrides?: Partial<SDKSessionOptions>
+      overrides?: Partial<SDKSessionOptions>,
+      tenant?: string
     ) {
+      const resolvedTenant = yield* resolveTenant(tenant)
+      const key = sessionKey(sessionId, resolvedTenant)
       const existing = yield* withLock(
         Ref.get(sessionsRef).pipe(
-          Effect.map((sessions) => sessions.get(sessionId))
+          Effect.map((sessions) => sessions.get(key))
         )
       )
       if (existing) {
-        yield* touch(sessionId)
-        return wrapHandle(sessionId, existing)
+        yield* touch(sessionId, resolvedTenant)
+        return wrapHandle(existing)
       }
       yield* ensureCapacity
       const scope = yield* Scope.make()
@@ -197,50 +262,58 @@ const makeSessionPool = (options: SessionPoolOptions) =>
       )
       const now = yield* Clock.currentTimeMillis
       const entry: SessionEntry = {
+        sessionId,
+        ...(resolvedTenant !== undefined ? { tenant: resolvedTenant } : {}),
         handle,
         scope,
         createdAt: now,
         lastUsedAt: now
       }
-      yield* storeEntry(sessionId, entry)
-      return wrapHandle(sessionId, entry)
+      yield* storeEntry(key, entry)
+      return wrapHandle(entry)
     })
 
-    const list = withLock(
-      Ref.get(sessionsRef).pipe(
-        Effect.map((sessions) =>
-          Array.from(sessions.entries()).map(([sessionId, entry]) => ({
-            sessionId,
-            createdAt: entry.createdAt,
-            lastUsedAt: entry.lastUsedAt
-          } satisfies SessionInfo))
+    const listByTenant = Effect.fn("SessionPool.listByTenant")(function*(tenant?: string) {
+      const resolvedTenant = yield* resolveTenant(tenant)
+      return yield* withLock(
+        Ref.get(sessionsRef).pipe(
+          Effect.map((sessions) =>
+            Array.from(sessions.values())
+              .filter((entry) => entry.tenant === resolvedTenant)
+              .map(toInfo)
+          )
         )
       )
-    )
+    })
 
-    const info = Effect.fn("SessionPool.info")((sessionId: string) =>
-      withLock(
+    const list = listByTenant(undefined)
+
+    const info = Effect.fn("SessionPool.info")(function*(
+      sessionId: string,
+      tenant?: string
+    ) {
+      const resolvedTenant = yield* resolveTenant(tenant)
+      return yield* withLock(
         Effect.gen(function*() {
           const sessions = yield* Ref.get(sessionsRef)
-          const entry = sessions.get(sessionId)
+          const entry = sessions.get(sessionKey(sessionId, resolvedTenant))
           if (!entry) {
             return yield* SessionPoolNotFoundError.make({
               message: "Session not found",
               sessionId
             })
           }
-          return {
-            sessionId,
-            createdAt: entry.createdAt,
-            lastUsedAt: entry.lastUsedAt
-          } satisfies SessionInfo
+          return toInfo(entry)
         })
       )
-    )
+    })
 
-    const close = Effect.fn("SessionPool.close")((sessionId: string) =>
-      closeEntry(sessionId, "manual")
-    )
+    const close = Effect.fn("SessionPool.close")(function*(
+      sessionId: string,
+      tenant?: string
+    ) {
+      return yield* closeEntry(sessionId, "manual", tenant)
+    })
 
     const closeAll = withLock(
       Effect.gen(function*() {
@@ -249,11 +322,11 @@ const makeSessionPool = (options: SessionPoolOptions) =>
         sessions.clear()
         yield* Effect.forEach(
           entries,
-          ([sessionId, entry]) =>
+          ([, entry]) =>
             Scope.close(entry.scope, Exit.succeed(undefined)).pipe(
               Effect.tap(() =>
                 options.onSessionClosed
-                  ? options.onSessionClosed(sessionId, "shutdown")
+                  ? options.onSessionClosed(entry.sessionId, "shutdown", entry.tenant)
                   : Effect.void
               )
             ),
@@ -265,9 +338,10 @@ const makeSessionPool = (options: SessionPoolOptions) =>
     const withSession = Effect.fn("SessionPool.withSession")(
       <A, E, R>(
         sessionId: string,
-        use: (handle: SessionHandle) => Effect.Effect<A, E, R>
+        use: (handle: SessionHandle) => Effect.Effect<A, E, R>,
+        tenant?: string
       ) =>
-        get(sessionId).pipe(
+        get(sessionId, undefined, tenant).pipe(
           Effect.flatMap(use)
         )
     )
@@ -289,11 +363,11 @@ const makeSessionPool = (options: SessionPoolOptions) =>
                 }
               }
               if (stale.length === 0) return
-              for (const [sessionId, entry] of stale) {
-                sessions.delete(sessionId)
+              for (const [key, entry] of stale) {
+                sessions.delete(key)
                 yield* Scope.close(entry.scope, Exit.succeed(undefined))
                 if (options.onSessionClosed) {
-                  yield* options.onSessionClosed(sessionId, "idle")
+                  yield* options.onSessionClosed(entry.sessionId, "idle", entry.tenant)
                 }
               }
             })
@@ -310,6 +384,7 @@ const makeSessionPool = (options: SessionPoolOptions) =>
       get,
       info,
       list,
+      listByTenant,
       close,
       closeAll,
       withSession
@@ -320,19 +395,28 @@ export class SessionPool extends Context.Tag("@effect/claude-agent-sdk/SessionPo
   SessionPool,
   {
     readonly create: (
-      overrides?: Partial<SDKSessionOptions>
+      overrides?: Partial<SDKSessionOptions>,
+      tenant?: string
     ) => Effect.Effect<SessionHandle, SessionManagerError | SessionPoolError>
     readonly get: (
       sessionId: string,
-      overrides?: Partial<SDKSessionOptions>
+      overrides?: Partial<SDKSessionOptions>,
+      tenant?: string
     ) => Effect.Effect<SessionHandle, SessionManagerError | SessionPoolError>
-    readonly info: (sessionId: string) => Effect.Effect<SessionInfo, SessionPoolError>
+    readonly info: (sessionId: string, tenant?: string) => Effect.Effect<SessionInfo, SessionPoolError>
     readonly withSession: <A, E, R>(
       sessionId: string,
-      use: (handle: SessionHandle) => Effect.Effect<A, E, R>
+      use: (handle: SessionHandle) => Effect.Effect<A, E, R>,
+      tenant?: string
     ) => Effect.Effect<A, E | SessionManagerError | SessionPoolError, R>
     readonly list: Effect.Effect<ReadonlyArray<SessionInfo>, SessionPoolError>
-    readonly close: (sessionId: string) => Effect.Effect<void, SessionError | SessionPoolError>
+    readonly listByTenant: (
+      tenant?: string
+    ) => Effect.Effect<ReadonlyArray<SessionInfo>, SessionPoolError>
+    readonly close: (
+      sessionId: string,
+      tenant?: string
+    ) => Effect.Effect<void, SessionError | SessionPoolError>
     readonly closeAll: Effect.Effect<void, SessionError>
   }
 >() {

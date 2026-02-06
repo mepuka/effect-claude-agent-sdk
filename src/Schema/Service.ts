@@ -4,6 +4,14 @@ import { SDKResultSuccess, SDKUserMessage } from "./Message.js"
 import { Options } from "./Options.js"
 import { SDKSessionOptions } from "./Session.js"
 
+export const Tenant = withIdentifier(
+  Schema.String,
+  "Tenant"
+)
+
+export type Tenant = typeof Tenant.Type
+export type TenantEncoded = typeof Tenant.Encoded
+
 export const QueryInput = withIdentifier(
   Schema.Struct({
     prompt: Schema.Union(
@@ -31,7 +39,8 @@ export type QueryResultOutputEncoded = typeof QueryResultOutput.Encoded
 
 export const SessionCreateInput = withIdentifier(
   Schema.Struct({
-    options: SDKSessionOptions
+    options: SDKSessionOptions,
+    tenant: Schema.optional(Tenant)
   }),
   "SessionCreateInput"
 )
@@ -51,7 +60,8 @@ export type SessionCreateOutputEncoded = typeof SessionCreateOutput.Encoded
 
 export const SessionSendInput = withIdentifier(
   Schema.Struct({
-    message: Schema.Union(Schema.String, SDKUserMessage)
+    message: Schema.Union(Schema.String, SDKUserMessage),
+    tenant: Schema.optional(Tenant)
   }),
   "SessionSendInput"
 )
@@ -62,6 +72,7 @@ export type SessionSendInputEncoded = typeof SessionSendInput.Encoded
 export const SessionInfo = withIdentifier(
   Schema.Struct({
     sessionId: Schema.String,
+    tenant: Schema.optional(Tenant),
     createdAt: Schema.Number,
     lastUsedAt: Schema.Number
   }),
