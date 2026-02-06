@@ -25,6 +25,26 @@ const makeSession = (sessionId = "session-1") => ({
 })
 
 mock.module("@anthropic-ai/claude-agent-sdk", () => ({
+  query: () => {
+    async function* generator() {
+      return
+    }
+    const iterator = generator()
+    return Object.assign(iterator, {
+      interrupt: async () => {},
+      setPermissionMode: async () => {},
+      setModel: async () => {},
+      setMaxThinkingTokens: async () => {},
+      rewindFiles: async () => ({ canRewind: false }),
+      supportedCommands: async () => [],
+      supportedModels: async () => [],
+      mcpServerStatus: async () => [],
+      setMcpServers: async () => ({ added: [], removed: [], errors: {} }),
+      accountInfo: async () => ({})
+    })
+  },
+  createSdkMcpServer: (_options: unknown) => ({}),
+  tool: (name: string, description: string, inputSchema: unknown, handler: (args: unknown, extra: unknown) => Promise<unknown>) => ({ name, description, inputSchema, handler }),
   unstable_v2_createSession: (options: unknown) => {
     if (createError) throw createError
     createOptions = options

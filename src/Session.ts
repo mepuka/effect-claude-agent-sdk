@@ -4,12 +4,16 @@ import {
   unstable_v2_resumeSession
 } from "@anthropic-ai/claude-agent-sdk"
 import type { SDKSession, SDKUserMessage as SdkSDKUserMessage } from "@anthropic-ai/claude-agent-sdk"
+import * as Duration from "effect/Duration"
 import * as Deferred from "effect/Deferred"
 import * as Effect from "effect/Effect"
+import * as Exit from "effect/Exit"
+import * as Option from "effect/Option"
 import * as Schema from "effect/Schema"
 import * as Stream from "effect/Stream"
 import * as SynchronizedRef from "effect/SynchronizedRef"
 import { TransportError } from "./Errors.js"
+import { defaultSessionLifecyclePolicy } from "./internal/lifecyclePolicy.js"
 import type { SDKMessage, SDKResultMessage, SDKUserMessage } from "./Schema/Message.js"
 import type { SDKSessionOptions } from "./Schema/Session.js"
 
@@ -68,8 +72,18 @@ type SessionState = {
   readonly inFlightSends: number
   readonly inFlightStreams: number
   readonly idleSignal: Deferred.Deferred<void, never> | null
-  readonly closeSignal: Deferred.Deferred<void, never> | null
+  readonly closeSignal: Deferred.Deferred<Exit.Exit<void, SessionError>, never> | null
 }
+
+export type SessionRuntimeOptions = {
+  readonly closeDrainTimeout?: Duration.DurationInput
+}
+
+const fromExit = <A, E>(exit: Exit.Exit<A, E>): Effect.Effect<A, E> =>
+  Exit.matchEffect(exit, {
+    onFailure: Effect.failCause,
+    onSuccess: Effect.succeed
+  })
 
 const isIdle = (state: SessionState) =>
   state.inFlightSends === 0 && state.inFlightStreams === 0
@@ -104,8 +118,18 @@ const normalizeUserMessage = (message: SDKUserMessage): SdkSDKUserMessage => {
  * Convert an SDK session into an Effect-managed SessionHandle.
  */
 export const fromSdkSession = Effect.fn("Session.fromSdkSession")(function*(
-  sdkSession: SDKSession
+  sdkSession: SDKSession,
+  runtimeOptions?: SessionRuntimeOptions
 ) {
+  const closeDrainTimeout = yield* Effect.try({
+    try: () =>
+      Duration.decode(
+        runtimeOptions?.closeDrainTimeout ?? defaultSessionLifecyclePolicy.closeDrainTimeout
+      ),
+    catch: (cause) =>
+      toTransportError("Invalid session close drain timeout", cause)
+  })
+
   const stateRef = yield* SynchronizedRef.make<SessionState>({
     phase: "open",
     inFlightSends: 0,
@@ -212,11 +236,14 @@ export const fromSdkSession = Effect.fn("Session.fromSdkSession")(function*(
 
   type CloseAction =
     | { readonly _tag: "AlreadyClosed" }
-    | { readonly _tag: "AwaitClose"; readonly closeSignal: Deferred.Deferred<void, never> }
+    | {
+        readonly _tag: "AwaitClose"
+        readonly closeSignal: Deferred.Deferred<Exit.Exit<void, SessionError>, never>
+      }
     | {
         readonly _tag: "StartClose"
         readonly idleSignal: Deferred.Deferred<void, never>
-        readonly closeSignal: Deferred.Deferred<void, never>
+        readonly closeSignal: Deferred.Deferred<Exit.Exit<void, SessionError>, never>
         readonly idle: boolean
       }
 
@@ -237,7 +264,7 @@ export const fromSdkSession = Effect.fn("Session.fromSdkSession")(function*(
       }
       return Effect.gen(function*() {
         const idleSignal = yield* Deferred.make<void>()
-        const closeSignal = yield* Deferred.make<void>()
+        const closeSignal = yield* Deferred.make<Exit.Exit<void, SessionError>>()
         const idle = isIdle(state)
         return [
           { _tag: "StartClose", idleSignal, closeSignal, idle },
@@ -254,27 +281,46 @@ export const fromSdkSession = Effect.fn("Session.fromSdkSession")(function*(
 
   const close: Effect.Effect<void, SessionError> = Effect.gen(function*() {
     const action = yield* beginClose
-    if (action._tag === "AlreadyClosed") return
-    if (action._tag === "AwaitClose") {
-      yield* Deferred.await(action.closeSignal)
+    if (action._tag === "AlreadyClosed") {
+      yield* Effect.logDebug("Session.close called on already closed session")
       return
     }
-    yield* Deferred.fail(sessionIdDeferred, sessionClosed("Session closed")).pipe(Effect.ignore)
-    if (action.idle) {
-      yield* Deferred.succeed(action.idleSignal, undefined)
+    if (action._tag === "AwaitClose") {
+      yield* Effect.logDebug("Session.close waiting for in-progress close")
+      const closeExit = yield* Deferred.await(action.closeSignal)
+      return yield* fromExit(closeExit)
     }
-    yield* Deferred.await(action.idleSignal)
-    yield* Effect.try({
-      try: () => sdkSession.close(),
-      catch: (cause) =>
-        toTransportError("Failed to close session", cause)
-    })
-    yield* Deferred.succeed(action.closeSignal, undefined)
+    yield* Effect.logDebug("Session lifecycle transition: open -> closing")
+    yield* Deferred.fail(sessionIdDeferred, sessionClosed("Session closed")).pipe(Effect.ignore)
+    const closeExit = yield* Effect.exit(
+      Effect.gen(function*() {
+        if (action.idle) {
+          yield* Deferred.succeed(action.idleSignal, undefined)
+        }
+        const idleResult = yield* Deferred.await(action.idleSignal).pipe(
+          Effect.timeoutOption(closeDrainTimeout)
+        )
+        if (Option.isNone(idleResult)) {
+          yield* Effect.logWarning(
+            "Session close timed out waiting for in-flight work. Forcing shutdown."
+          )
+        }
+        yield* Effect.try({
+          try: () => sdkSession.close(),
+          catch: (cause) =>
+            toTransportError("Failed to close session", cause)
+        })
+      })
+    )
     yield* SynchronizedRef.update(stateRef, (state): SessionState => ({
       ...state,
       phase: "closed",
-      idleSignal: null
+      idleSignal: null,
+      closeSignal: null
     }))
+    yield* Effect.logDebug("Session lifecycle transition: closing -> closed")
+    yield* Deferred.succeed(action.closeSignal, closeExit).pipe(Effect.ignore)
+    return yield* fromExit(closeExit)
   }).pipe(Effect.withSpan("Session.close"))
 
   return {
@@ -289,39 +335,48 @@ const closeQuietly = (handle: SessionHandle) =>
   handle.close.pipe(Effect.catchAll(() => Effect.void))
 
 const createSessionEffect = Effect.fn("Session.createSession")(function*(
-  options: SDKSessionOptions
+  options: SDKSessionOptions,
+  runtimeOptions?: SessionRuntimeOptions
 ) {
   const resolved = normalizeOptions(options)
   const sdkSession = yield* Effect.try({
     try: () => unstable_v2_createSession(resolved as Parameters<typeof unstable_v2_createSession>[0]),
     catch: (cause) => toTransportError("Failed to create session", cause)
   })
-  return yield* fromSdkSession(sdkSession)
+  return yield* fromSdkSession(sdkSession, runtimeOptions)
 })
 
 const resumeSessionEffect = Effect.fn("Session.resumeSession")(function*(
   sessionId: string,
-  options: SDKSessionOptions
+  options: SDKSessionOptions,
+  runtimeOptions?: SessionRuntimeOptions
 ) {
   const resolved = normalizeOptions(options)
   const sdkSession = yield* Effect.try({
     try: () => unstable_v2_resumeSession(sessionId, resolved as Parameters<typeof unstable_v2_resumeSession>[1]),
     catch: (cause) => toTransportError("Failed to resume session", cause)
   })
-  return yield* fromSdkSession(sdkSession)
+  return yield* fromSdkSession(sdkSession, runtimeOptions)
 })
 
 /**
  * Create a new SDK session and scope its lifetime to the Effect scope.
  */
-export const createSession = (options: SDKSessionOptions) =>
-  Effect.acquireRelease(createSessionEffect(options), closeQuietly)
+export const createSession = (
+  options: SDKSessionOptions,
+  runtimeOptions?: SessionRuntimeOptions
+) =>
+  Effect.acquireRelease(createSessionEffect(options, runtimeOptions), closeQuietly)
 
 /**
  * Resume an existing SDK session and scope its lifetime to the Effect scope.
  */
-export const resumeSession = (sessionId: string, options: SDKSessionOptions) =>
-  Effect.acquireRelease(resumeSessionEffect(sessionId, options), closeQuietly)
+export const resumeSession = (
+  sessionId: string,
+  options: SDKSessionOptions,
+  runtimeOptions?: SessionRuntimeOptions
+) =>
+  Effect.acquireRelease(resumeSessionEffect(sessionId, options, runtimeOptions), closeQuietly)
 
 /**
  * Run a one-off prompt using the SDK session API.

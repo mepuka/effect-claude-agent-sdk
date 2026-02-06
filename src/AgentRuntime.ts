@@ -143,7 +143,9 @@ const recordHandleWithStore = Effect.fn("AgentRuntime.recordHandleWithStore")(fu
   const recordMessage = (message: SDKMessage, source: ChatEventSource) => {
     const resolvedSessionId = sessionId ?? message.session_id
     const effect = store.appendMessage(resolvedSessionId, message, { source }).pipe(Effect.asVoid)
-    return strict ? effect.pipe(Effect.orDie) : effect.pipe(Effect.catchAll(() => Effect.void))
+    return strict
+      ? effect.pipe(Effect.orDie)
+      : effect.pipe(Effect.catchAllCause(() => Effect.void))
   }
 
   const recordMessages = (messages: ReadonlyArray<SDKUserMessage>, source: ChatEventSource) => {
@@ -151,19 +153,17 @@ const recordHandleWithStore = Effect.fn("AgentRuntime.recordHandleWithStore")(fu
     const resolvedSessionId = sessionId ?? messages[0]?.session_id
     if (!resolvedSessionId) return Effect.void
     const effect = store.appendMessages(resolvedSessionId, messages, { source }).pipe(Effect.asVoid)
-    return strict ? effect.pipe(Effect.orDie) : effect.pipe(Effect.catchAll(() => Effect.void))
+    return strict
+      ? effect.pipe(Effect.orDie)
+      : effect.pipe(Effect.catchAllCause(() => Effect.void))
   }
 
-  let stream = handle.stream
-  if (recordOutput) {
-    const [userStream, recordStream] = yield* Stream.broadcast(handle.stream, 2, 64)
-    stream = userStream
-    yield* Effect.forkScoped(
-      Stream.runForEach(recordStream, (message) =>
-        recordMessage(message, outputSource)
-      )
-    )
-  }
+  const withOutputRecording = (stream: Stream.Stream<SDKMessage, AgentSdkError>) =>
+    recordOutput
+      ? stream.pipe(Stream.tap((message) => recordMessage(message, outputSource)))
+      : stream
+
+  const stream = withOutputRecording(handle.stream)
 
   const send = recordInput
     ? Effect.fn("AgentRuntime.sendWithHistory")((message: SDKUserMessage) =>

@@ -136,6 +136,9 @@ const layer = runtimeLayer({
 })
 ```
 
+Notes:
+- `resume` uses Claude session state inside the sandbox container process. If the container has hibernated and resumed state is unavailable, the runtime retries once without `--resume`.
+
 ### Deployment Profiles
 
 Use `storageBackend` and `storageBindings` for Cloudflare R2 or KV storage:

@@ -185,15 +185,28 @@ const resolveJournaledOptions = <R = never>(options?: ChatHistoryJournaledOption
   ...(options?.conflictPolicy !== undefined ? { conflictPolicy: options.conflictPolicy } : {})
 })
 
+const logIndexWarning = (operation: string, sessionId: string, cause: unknown) =>
+  Effect.logWarning(
+    `[ChatHistoryStore] session index ${operation} failed for session=${sessionId}: ${String(cause)}`
+  )
+
 const touchSessionIndex = (sessionId: string, timestamp: number) =>
   Effect.flatMap(SessionIndexStore, (store) =>
     store.touch(sessionId, { updatedAt: timestamp }).pipe(Effect.asVoid)
-  ).pipe(Effect.catchAll(() => Effect.void))
+  ).pipe(
+    Effect.catchAll((cause) =>
+      logIndexWarning("touch", sessionId, cause).pipe(Effect.asVoid)
+    )
+  )
 
 const removeSessionIndex = (sessionId: string) =>
   Effect.flatMap(SessionIndexStore, (store) =>
     store.remove(sessionId).pipe(Effect.asVoid)
-  ).pipe(Effect.catchAll(() => Effect.void))
+  ).pipe(
+    Effect.catchAll((cause) =>
+      logIndexWarning("remove", sessionId, cause).pipe(Effect.asVoid)
+    )
+  )
 
 const applyRetention = (
   events: ReadonlyArray<ChatEvent>,
@@ -316,7 +329,23 @@ const layerChatJournalHandlers = (options?: {
         yield* eventStore.set(eventKey(event.sessionId, event.sequence), event).pipe(
           Effect.mapError((cause) => mapError("appendMessage", cause))
         )
-        yield* saveMeta(event.sessionId, { lastSequence, updatedAt })
+        yield* saveMeta(event.sessionId, { lastSequence, updatedAt }).pipe(
+          Effect.catchAll((error) =>
+            eventStore.remove(eventKey(event.sessionId, event.sequence)).pipe(
+              Effect.catchAll((cleanupCause) =>
+                Effect.logWarning(
+                  `[ChatHistoryStore] journal append compensation failed while removing event session=${event.sessionId} sequence=${event.sequence}: ${String(cleanupCause)}`
+                ).pipe(Effect.asVoid)
+              ),
+              Effect.zipRight(
+                Effect.logWarning(
+                  `[ChatHistoryStore] journal append compensation removed event session=${event.sessionId} sequence=${event.sequence} after meta save failure`
+                )
+              ),
+              Effect.zipRight(Effect.fail(error))
+            )
+          )
+        )
 
         const retention = yield* resolveRetention
         yield* applyRetentionKv(event.sessionId, lastSequence, event.timestamp, retention)
@@ -400,6 +429,41 @@ const makeJournaledStore = (options?: {
           updatedAt: 0
         } satisfies ChatMeta)))
       )
+
+    const saveMeta = (sessionId: string, meta: ChatMeta) =>
+      metaStore.set(metaKey(sessionId), meta).pipe(
+        Effect.mapError((cause) =>
+          toStorageError(storeName, "saveMeta", cause)
+        )
+      )
+
+    const repairTrailingMetaGap = (sessionId: string, meta: ChatMeta) =>
+      Effect.gen(function*() {
+        let nextLastSequence = meta.lastSequence
+        while (nextLastSequence > 0) {
+          const eventOption = yield* eventStore.get(eventKey(sessionId, nextLastSequence)).pipe(
+            Effect.mapError((cause) =>
+              toStorageError(storeName, "cleanup", cause)
+            )
+          )
+          if (Option.isSome(eventOption)) {
+            break
+          }
+          nextLastSequence -= 1
+        }
+        if (nextLastSequence !== meta.lastSequence) {
+          const repaired: ChatMeta = {
+            lastSequence: nextLastSequence,
+            updatedAt: meta.updatedAt
+          }
+          yield* saveMeta(sessionId, repaired)
+          yield* Effect.logWarning(
+            `[ChatHistoryStore] repaired trailing meta gap for session=${sessionId} from sequence=${meta.lastSequence} to sequence=${nextLastSequence}`
+          )
+          return repaired
+        }
+        return meta
+      })
 
     const appendMessage = Effect.fn("ChatHistoryStore.appendMessage")(
       function*(sessionId: string, message: SDKMessage, options?: ChatHistoryAppendOptions) {
@@ -554,7 +618,7 @@ const makeJournaledStore = (options?: {
               Option.isNone(metaOption)
                 ? Effect.void
                 : Effect.gen(function*() {
-                  const meta = metaOption.value
+                  const meta = yield* repairTrailingMetaGap(sessionId, metaOption.value)
                   const retentionValue = retention
                   if (!retentionValue) return
                   const removals = new Set<number>()
@@ -604,26 +668,15 @@ const makeJournaledStore = (options?: {
                         Effect.mapError((cause) =>
                           toStorageError(storeName, "retention", cause)
                         )
-                      ),
+                    ),
                     { discard: true }
                   )
 
-                  const currentSequences = range(1, meta.lastSequence, false, meta.lastSequence)
-                  const retained = currentSequences.filter((sequence) => !removals.has(sequence))
-                  const nextLastSequence = retained.length > 0 ? retained[retained.length - 1]! : 0
-
-                  yield* metaStore.set(metaKey(sessionId), {
-                    lastSequence: nextLastSequence,
-                    updatedAt: meta.updatedAt
-                  }).pipe(
-                    Effect.mapError((cause) =>
-                      toStorageError(storeName, "retention", cause)
-                    )
-                  )
+                  yield* repairTrailingMetaGap(sessionId, meta)
                 })
             )
           ),
-        { discard: true }
+        { discard: true, concurrency: 1 }
       )
     })
 
@@ -825,6 +878,34 @@ export class ChatHistoryStore extends Context.Tag("@effect/claude-agent-sdk/Chat
             )
           )
 
+        const repairTrailingMetaGap = (sessionId: string, meta: ChatMeta) =>
+          Effect.gen(function*() {
+            let nextLastSequence = meta.lastSequence
+            while (nextLastSequence > 0) {
+              const eventOption = yield* eventStore.get(eventKey(sessionId, nextLastSequence)).pipe(
+                Effect.mapError((cause) =>
+                  toStorageError(storeName, "cleanup", cause)
+                )
+              )
+              if (Option.isSome(eventOption)) {
+                break
+              }
+              nextLastSequence -= 1
+            }
+            if (nextLastSequence !== meta.lastSequence) {
+              const repaired: ChatMeta = {
+                lastSequence: nextLastSequence,
+                updatedAt: meta.updatedAt
+              }
+              yield* saveMeta(sessionId, repaired)
+              yield* Effect.logWarning(
+                `[ChatHistoryStore] repaired trailing meta gap for session=${sessionId} from sequence=${meta.lastSequence} to sequence=${nextLastSequence}`
+              )
+              return repaired
+            }
+            return meta
+          })
+
         const applyRetentionKv = (
           sessionId: string,
           lastSequence: number,
@@ -902,7 +983,23 @@ export class ChatHistoryStore extends Context.Tag("@effect/claude-agent-sdk/Chat
                 toStorageError(storeName, "appendMessage", cause)
               )
             )
-            yield* saveMeta(sessionId, { lastSequence: sequence, updatedAt: timestamp })
+            yield* saveMeta(sessionId, { lastSequence: sequence, updatedAt: timestamp }).pipe(
+              Effect.catchAll((error) =>
+                eventStore.remove(eventKey(sessionId, sequence)).pipe(
+                  Effect.catchAll((cleanupCause) =>
+                    Effect.logWarning(
+                      `[ChatHistoryStore] appendMessage compensation failed while removing event session=${sessionId} sequence=${sequence}: ${String(cleanupCause)}`
+                    ).pipe(Effect.asVoid)
+                  ),
+                  Effect.zipRight(
+                    Effect.logWarning(
+                      `[ChatHistoryStore] appendMessage compensation removed event session=${sessionId} sequence=${sequence} after meta save failure`
+                    )
+                  ),
+                  Effect.zipRight(Effect.fail(error))
+                )
+              )
+            )
             yield* applyRetentionKv(sessionId, sequence, timestamp, retention)
             yield* touchSessionIndex(sessionId, timestamp)
             return event
@@ -933,14 +1030,37 @@ export class ChatHistoryStore extends Context.Tag("@effect/claude-agent-sdk/Chat
                   Effect.mapError((cause) =>
                     toStorageError(storeName, "appendMessages", cause)
                   )
-                ),
+              ),
               { discard: true }
             )
 
+            const writtenSequences = events.map((event) => event.sequence)
             yield* saveMeta(sessionId, {
               lastSequence: meta.lastSequence + events.length,
               updatedAt: timestamp
-            })
+            }).pipe(
+              Effect.catchAll((error) =>
+                Effect.forEach(
+                  writtenSequences,
+                  (sequence) =>
+                    eventStore.remove(eventKey(sessionId, sequence)).pipe(
+                      Effect.catchAll((cleanupCause) =>
+                        Effect.logWarning(
+                          `[ChatHistoryStore] appendMessages compensation failed while removing event session=${sessionId} sequence=${sequence}: ${String(cleanupCause)}`
+                        ).pipe(Effect.asVoid)
+                      )
+                    ),
+                  { discard: true }
+                ).pipe(
+                  Effect.zipRight(
+                    Effect.logWarning(
+                      `[ChatHistoryStore] appendMessages compensation removed ${writtenSequences.length} events for session=${sessionId} after meta save failure`
+                    )
+                  ),
+                  Effect.zipRight(Effect.fail(error))
+                )
+              )
+            )
 
             yield* applyRetentionKv(sessionId, meta.lastSequence + events.length, timestamp, retention)
             yield* touchSessionIndex(sessionId, timestamp)
@@ -1037,12 +1157,13 @@ export class ChatHistoryStore extends Context.Tag("@effect/claude-agent-sdk/Chat
           yield* Effect.forEach(
             sessionIds,
             (sessionId) =>
-              loadMeta(sessionId).pipe(
-                Effect.flatMap((meta) =>
-                  applyRetentionKv(sessionId, meta.lastSequence, now, retention)
-                )
-              ),
-            { discard: true }
+              Effect.gen(function*() {
+                const meta = yield* loadMeta(sessionId)
+                const repairedMeta = yield* repairTrailingMetaGap(sessionId, meta)
+                yield* applyRetentionKv(sessionId, repairedMeta.lastSequence, now, retention)
+                yield* repairTrailingMetaGap(sessionId, repairedMeta)
+              }),
+            { discard: true, concurrency: 1 }
           )
         })
 

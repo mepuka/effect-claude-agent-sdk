@@ -242,13 +242,65 @@ const applySandboxHooks = (handle: QueryHandle, options?: Options): QueryHandle 
     }, { discard: true })
 
   let sessionStarted = false
+  let sessionId: string | undefined
+  let sessionEnded = false
+  let stopFired = false
   const toolNames = new Map<string, string>()
   const preToolFired = new Set<string>()
   const completedToolUseIds = new Set<string>()
 
+  const firePostToolUseFailures = (
+    resolvedSessionId: string,
+    errorMessage: string,
+    isInterrupt?: boolean
+  ) =>
+    Effect.gen(function*() {
+      for (const toolUseId of preToolFired) {
+        if (completedToolUseIds.has(toolUseId)) continue
+        completedToolUseIds.add(toolUseId)
+        const input = {
+          ...makeBaseInput(resolvedSessionId),
+          hook_event_name: "PostToolUseFailure",
+          tool_name: toolNames.get(toolUseId) ?? "unknown",
+          tool_input: {},
+          tool_use_id: toolUseId,
+          error: errorMessage,
+          ...(isInterrupt ? { is_interrupt: true } : {})
+        } as HookInput
+        yield* runHookEvent("PostToolUseFailure", input, toolUseId).pipe(Effect.ignore)
+      }
+    })
+
+  const fireStop = (resolvedSessionId: string) =>
+    stopFired
+      ? Effect.void
+      : Effect.gen(function*() {
+          stopFired = true
+          const stopInput = {
+            ...makeBaseInput(resolvedSessionId),
+            hook_event_name: "Stop",
+            stop_hook_active: false
+          } as HookInput
+          yield* runHookEvent("Stop", stopInput).pipe(Effect.ignore)
+        })
+
+  const fireSessionEnd = (resolvedSessionId: string) =>
+    sessionEnded
+      ? Effect.void
+      : Effect.gen(function*() {
+          sessionEnded = true
+          const input = {
+            ...makeBaseInput(resolvedSessionId),
+            hook_event_name: "SessionEnd",
+            reason: "other"
+          } as HookInput
+          yield* runHookEvent("SessionEnd", input).pipe(Effect.ignore)
+        })
+
   const stream = handle.stream.pipe(
     Stream.tap((message) =>
       Effect.gen(function*() {
+        sessionId = message.session_id
         if (!sessionStarted) {
           sessionStarted = true
           const input = {
@@ -300,36 +352,28 @@ const applySandboxHooks = (handle: QueryHandle, options?: Options): QueryHandle 
               "errors" in message && message.errors.length > 0
                 ? message.errors[0]!
                 : fallbackError
-            for (const toolUseId of preToolFired) {
-              if (completedToolUseIds.has(toolUseId)) continue
-              completedToolUseIds.add(toolUseId)
-              const input = {
-                ...makeBaseInput(message.session_id),
-                hook_event_name: "PostToolUseFailure",
-                tool_name: toolNames.get(toolUseId) ?? "unknown",
-                tool_input: {},
-                tool_use_id: toolUseId,
-                error: errorMessage
-              } as HookInput
-              yield* runHookEvent("PostToolUseFailure", input, toolUseId).pipe(Effect.ignore)
-            }
-
-            const stopInput = {
-              ...makeBaseInput(message.session_id),
-              hook_event_name: "Stop",
-              stop_hook_active: false
-            } as HookInput
-            yield* runHookEvent("Stop", stopInput).pipe(Effect.ignore)
+            yield* firePostToolUseFailures(message.session_id, errorMessage)
+            yield* fireStop(message.session_id)
           }
 
-          const input = {
-            ...makeBaseInput(message.session_id),
-            hook_event_name: "SessionEnd",
-            reason: "other"
-          } as HookInput
-          yield* runHookEvent("SessionEnd", input).pipe(Effect.ignore)
+          yield* fireSessionEnd(message.session_id)
         }
       })
+    ),
+    Stream.ensuringWith((exit) =>
+      Effect.gen(function*() {
+        if (!sessionStarted || sessionEnded) return
+        const resolvedSessionId = sessionId ?? "sandbox-session"
+        if (Exit.isFailure(exit)) {
+          const interrupted = Exit.isInterrupted(exit)
+          const errorMessage = interrupted
+            ? "Sandbox query interrupted before emitting result"
+            : "Sandbox query terminated before emitting result"
+          yield* firePostToolUseFailures(resolvedSessionId, errorMessage, interrupted)
+          yield* fireStop(resolvedSessionId)
+        }
+        yield* fireSessionEnd(resolvedSessionId)
+      }).pipe(Effect.ignore)
     )
   )
 

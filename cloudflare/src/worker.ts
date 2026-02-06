@@ -1,5 +1,6 @@
 import type { SyncWorkerEnv } from "./types.js"
 import { SyncDurableObject } from "./do/SyncDurableObject.js"
+import { authorizeRequest } from "./auth.js"
 
 const routeMatcher = /^\/event-log(?:\/([^/]+))?\/?$/
 const tenantPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
@@ -22,36 +23,6 @@ const parseTenant = (url: URL) => {
   return { ok: true, tenant } as const
 }
 
-const parseProtocolToken = (request: Request) => {
-  const header = request.headers.get("Sec-WebSocket-Protocol")
-  if (!header) return undefined
-  const protocols = header
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter(Boolean)
-  const authProtocol = protocols.find((entry) => entry.startsWith("sync-auth."))
-  if (!authProtocol) return undefined
-  return {
-    token: authProtocol.slice("sync-auth.".length),
-    protocol: authProtocol
-  }
-}
-
-const authorize = (request: Request, env: SyncWorkerEnv, url: URL) => {
-  const expected = env.SYNC_AUTH_TOKEN
-  if (!expected) return { ok: true, protocol: undefined }
-  const header = request.headers.get("Authorization")
-  const bearer = header?.startsWith("Bearer ") ? header.slice(7) : undefined
-  const protocol = parseProtocolToken(request)
-  const protocolMatch = protocol?.token === expected ? protocol.protocol : undefined
-  const allowQuery =
-    env.SYNC_ALLOW_QUERY_TOKEN === "1" || env.SYNC_ALLOW_QUERY_TOKEN === "true"
-  const query = allowQuery ? url.searchParams.get("token") ?? undefined : undefined
-  const token = bearer ?? (protocolMatch ? protocol?.token : undefined) ?? query
-  const ok = token === expected
-  return { ok, protocol: ok ? protocolMatch : undefined }
-}
-
 export default {
   async fetch(request: Request, env: SyncWorkerEnv): Promise<Response> {
     const url = new URL(request.url)
@@ -59,7 +30,7 @@ export default {
     if (!tenantResult.ok) {
       return new Response(tenantResult.message, { status: tenantResult.status })
     }
-    const auth = authorize(request, env, url)
+    const auth = authorizeRequest(request, env, url)
     if (!auth.ok) {
       return new Response("Unauthorized", {
         status: 401,

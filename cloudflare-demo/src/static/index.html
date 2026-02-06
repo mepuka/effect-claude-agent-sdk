@@ -212,6 +212,7 @@
   <div id="status">
     <span><span class="dot" id="status-dot"></span><span id="status-text">Ready</span></span>
     <span id="status-meta"></span>
+    <button id="new-session" style="background:none;border:1px solid var(--border);color:var(--text-muted);font-family:var(--font-mono);font-size:0.75rem;padding:0.1rem 0.5rem;border-radius:4px;cursor:pointer;">New Session</button>
   </div>
 
   <script>
@@ -224,6 +225,7 @@
     const statusMeta = $("#status-meta");
 
     let streaming = false;
+    let sessionId = null;
 
     const addLine = (text, cls = "") => {
       const el = document.createElement("div");
@@ -258,7 +260,7 @@
         const res = await fetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt: text }),
+          body: JSON.stringify({ prompt: text, ...(sessionId ? { sessionId } : {}) }),
         });
 
         if (!res.ok || !res.body) {
@@ -269,6 +271,39 @@
         const decoder = new TextDecoder();
         let buffer = "";
 
+        // Dispatch a complete SSE event
+        const dispatch = (eventType, data) => {
+          console.log(`[SSE] ${eventType}:`, data);
+
+          if (eventType === "session") {
+            try {
+              const s = JSON.parse(data);
+              if (s.sessionId) sessionId = s.sessionId;
+            } catch {}
+          } else if (eventType === "text") {
+            fullText += data;
+            responseLine.textContent = fullText;
+            output.scrollTop = output.scrollHeight;
+          } else if (eventType === "result") {
+            try {
+              const meta = JSON.parse(data);
+              const sid = meta.sessionId ? ` | session: ${meta.sessionId.slice(0, 8)}...` : "";
+              statusMeta.textContent =
+                `$${meta.cost?.toFixed(4) ?? "?"} | ${meta.turns ?? "?"} turns | ${meta.duration_ms ?? "?"}ms${sid}`;
+            } catch {}
+          } else if (eventType === "error") {
+            try {
+              const err = JSON.parse(data);
+              addLine(`Error: ${err.message}`, "line--error");
+            } catch {
+              addLine(`Error: ${data}`, "line--error");
+            }
+          }
+        };
+
+        let eventType = "";
+        let dataLines = [];
+
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
@@ -277,34 +312,23 @@
           const lines = buffer.split("\n");
           buffer = lines.pop() ?? "";
 
-          let eventType = "";
           for (const line of lines) {
             if (line.startsWith("event: ")) {
               eventType = line.slice(7);
             } else if (line.startsWith("data: ")) {
-              const data = line.slice(6);
-
-              if (eventType === "text") {
-                fullText += data;
-                responseLine.textContent = fullText;
-                output.scrollTop = output.scrollHeight;
-              } else if (eventType === "result") {
-                try {
-                  const meta = JSON.parse(data);
-                  statusMeta.textContent =
-                    `$${meta.cost?.toFixed(4) ?? "?"} | ${meta.turns ?? "?"} turns | ${meta.duration_ms ?? "?"}ms`;
-                } catch {}
-              } else if (eventType === "error") {
-                try {
-                  const err = JSON.parse(data);
-                  addLine(`Error: ${err.message}`, "line--error");
-                } catch {
-                  addLine(`Error: ${data}`, "line--error");
-                }
-              }
+              dataLines.push(line.slice(6));
+            } else if (line === "" && eventType) {
+              // Blank line = end of SSE event. Multi-line data joined with \n per spec.
+              dispatch(eventType, dataLines.join("\n"));
               eventType = "";
+              dataLines = [];
             }
           }
+        }
+
+        // Flush any remaining event
+        if (eventType && dataLines.length > 0) {
+          dispatch(eventType, dataLines.join("\n"));
         }
       } catch (err) {
         addLine(`Error: ${err.message}`, "line--error");
@@ -322,6 +346,14 @@
     });
 
     sendBtn.addEventListener("click", submit);
+
+    $("#new-session").addEventListener("click", () => {
+      sessionId = null;
+      output.innerHTML = "";
+      addLine("Effect Agent Demo \u2014 Cloudflare Sandbox + R2 Storage", "line--system");
+      addLine("New session started.", "line--system");
+      statusMeta.textContent = "";
+    });
   </script>
 </body>
 </html>

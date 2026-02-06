@@ -11,6 +11,7 @@ import { QuerySupervisorConfig, type QuerySupervisorSettings } from "../src/Quer
 import type { QueryHandle } from "../src/Query.js"
 import type { SDKMessage, SDKUserMessage } from "../src/Schema/Message.js"
 import type { Options } from "../src/Schema/Options.js"
+import { SandboxError } from "../src/Sandbox/SandboxError.js"
 import { SandboxService } from "../src/Sandbox/SandboxService.js"
 import { runEffect } from "./effect-test.js"
 
@@ -423,6 +424,116 @@ test("QuerySupervisor replays PostToolUseFailure and Stop hooks on sandbox query
       expect(failureError).toBe("tool crashed")
       expect(stopCalls).toBe(1)
       expect(stopSessionId).toBe("session-failure-hooks")
+    }).pipe(Effect.provide(layer))
+  )
+
+  await runEffect(program)
+})
+
+test("QuerySupervisor emits Stop and SessionEnd when sandbox stream fails before result", async () => {
+  const { AgentSdk } = await import("../src/AgentSdk.js")
+
+  const sdk = AgentSdk.make({
+    query: () => Effect.succeed(makeHandle()),
+    createSdkMcpServer: () => Effect.succeed({} as never),
+    createSdkMcpServerScoped: () => Effect.succeed({} as never)
+  }) satisfies AgentSdk
+
+  let failureCalls = 0
+  let stopCalls = 0
+  let sessionEndCalls = 0
+  let failureToolUseId: string | undefined
+
+  const sandbox = SandboxService.of({
+    provider: "cloudflare",
+    isolated: true,
+    exec: () => Effect.succeed({ stdout: "", stderr: "", exitCode: 0 }),
+    writeFile: () => Effect.void,
+    readFile: () => Effect.succeed(""),
+    runAgent: () =>
+      Effect.succeed({
+        ...makeHandle(),
+        stream: Stream.make({
+          type: "tool_progress",
+          tool_use_id: "tool-stream-failure",
+          tool_name: "bash",
+          parent_tool_use_id: null,
+          elapsed_time_seconds: 0.1,
+          uuid: "tool-progress-stream-failure-uuid",
+          session_id: "session-stream-failure-hooks"
+        } as SDKMessage).pipe(
+          Stream.concat(
+            Stream.fail(
+              SandboxError.make({
+                message: "sandbox stream failed",
+                operation: "runAgent",
+                provider: "cloudflare"
+              })
+            )
+          )
+        )
+      } satisfies QueryHandle),
+    destroy: Effect.void
+  })
+
+  const layer = QuerySupervisor.layer.pipe(
+    Layer.provide(
+      Layer.succeed(
+        QuerySupervisorConfig,
+        QuerySupervisorConfig.make({ settings: baseSettings })
+      )
+    ),
+    Layer.provide(Layer.succeed(AgentSdk, sdk)),
+    Layer.provide(Layer.succeed(SandboxService, sandbox))
+  )
+
+  const program = Effect.scoped(
+    Effect.gen(function*() {
+      const supervisor = yield* QuerySupervisor
+      const options = {
+        hooks: {
+          PostToolUseFailure: [
+            {
+              matcher: "bash",
+              hooks: [
+                async (input) => {
+                  failureCalls += 1
+                  failureToolUseId = "tool_use_id" in input ? input.tool_use_id : undefined
+                  return {}
+                }
+              ]
+            }
+          ],
+          Stop: [
+            {
+              hooks: [
+                async () => {
+                  stopCalls += 1
+                  return {}
+                }
+              ]
+            }
+          ],
+          SessionEnd: [
+            {
+              hooks: [
+                async () => {
+                  sessionEndCalls += 1
+                  return {}
+                }
+              ]
+            }
+          ]
+        }
+      } as Options
+
+      const handle = yield* supervisor.submit("stream-failure", options)
+      const result = yield* Effect.either(Stream.runDrain(handle.stream))
+      expect(Either.isLeft(result)).toBe(true)
+      expect(failureCalls).toBe(1)
+      expect(failureToolUseId).toBe("tool-stream-failure")
+      expect(stopCalls).toBe(1)
+      expect(sessionEndCalls).toBe(1)
     }).pipe(Effect.provide(layer))
   )
 

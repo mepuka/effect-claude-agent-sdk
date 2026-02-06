@@ -46,33 +46,28 @@ const getEffect = async () => {
 }
 
 // ---------------------------------------------------------------------------
-// Runtime cache (per-isolate, reused across requests)
+// Runtime factory (per-request — sandbox DO stubs can't cross request boundaries)
 // ---------------------------------------------------------------------------
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let cached: any
-
 const getRuntime = async (env: Env) => {
-  if (!cached) {
-    const { managedRuntime } = await getSDK()
-    cached = managedRuntime({
-      apiKey: env.ANTHROPIC_API_KEY,
-      model: "sonnet",
-      storageBackend: "r2",
-      storageMode: "standard",
-      storageBindings: { r2Bucket: env.BUCKET as never },
-      persistence: { directory: "demo-data" },
-      sandbox: {
-        provider: "cloudflare",
-        sandboxId: "demo-agent",
-        env: { Sandbox: env.Sandbox },
-        sleepAfter: "15m",
-        apiKey: env.ANTHROPIC_API_KEY
-      }
-    })
-  }
-  return cached as {
+  const { managedRuntime } = await getSDK()
+  return managedRuntime({
+    apiKey: env.ANTHROPIC_API_KEY,
+    model: "sonnet",
+    storageBackend: "r2",
+    storageMode: "standard",
+    storageBindings: { r2Bucket: env.BUCKET as never },
+    persistence: { directory: "demo-data" },
+    sandbox: {
+      provider: "cloudflare",
+      sandboxId: "demo-agent",
+      env: { Sandbox: env.Sandbox },
+      sleepAfter: "15m",
+      apiKey: env.ANTHROPIC_API_KEY
+    }
+  }) as {
     runPromise: <A>(effect: import("effect/Effect").Effect<A, unknown, unknown>) => Promise<A>
+    [Symbol.dispose]?: () => void
   }
 }
 
@@ -80,8 +75,11 @@ const getRuntime = async (env: Env) => {
 // SSE helpers
 // ---------------------------------------------------------------------------
 
-const sseEvent = (event: string, data: string) =>
-  `event: ${event}\ndata: ${data}\n\n`
+const sseEvent = (event: string, data: string) => {
+  // SSE spec: multi-line data requires each line to have its own "data:" prefix
+  const dataLines = data.split("\n").map((line) => `data: ${line}`).join("\n")
+  return `event: ${event}\n${dataLines}\n\n`
+}
 
 const sseHeaders = new Headers({
   "Content-Type": "text/event-stream",
@@ -132,12 +130,20 @@ const handleChat = async (request: Request, env: Env): Promise<Response> => {
       Effect.gen(function*() {
         const sandbox = yield* SandboxNs.SandboxService
         const handle = yield* sandbox.runAgent(body.prompt, {
-          permissionMode: "bypassPermissions"
+          permissionMode: "bypassPermissions",
+          ...(body.sessionId ? { resume: body.sessionId } : {})
         } as any)
 
         yield* handle.stream.pipe(
           Stream.runForEach((msg: any) =>
             Effect.gen(function*() {
+              // Emit session_id from init message so client can resume
+              if (msg.type === "system" && msg.subtype === "init" && msg.session_id) {
+                yield* Effect.promise(() =>
+                  write("session", JSON.stringify({ sessionId: msg.session_id }))
+                )
+              }
+
               const chunks = MessageFilters.extractTextChunks(msg)
               for (const chunk of chunks) {
                 yield* Effect.promise(() => write("text", chunk))
@@ -146,6 +152,7 @@ const handleChat = async (request: Request, env: Env): Promise<Response> => {
               if (MessageFilters.isResultSuccess(msg)) {
                 yield* Effect.promise(() =>
                   write("result", JSON.stringify({
+                    sessionId: msg.session_id,
                     cost: msg.total_cost_usd,
                     turns: msg.num_turns,
                     duration_ms: msg.duration_ms

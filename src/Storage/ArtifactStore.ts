@@ -126,15 +126,28 @@ const resolveEnabled = Effect.gen(function*() {
   return Option.isNone(config) ? true : config.value.settings.enabled.artifacts
 })
 
+const logIndexWarning = (operation: string, sessionId: string, cause: unknown) =>
+  Effect.logWarning(
+    `[ArtifactStore] session index ${operation} failed for session=${sessionId}: ${String(cause)}`
+  )
+
 const touchSessionIndex = (sessionId: string, timestamp: number) =>
   Effect.flatMap(SessionIndexStore, (store) =>
     store.touch(sessionId, { updatedAt: timestamp }).pipe(Effect.asVoid)
-  ).pipe(Effect.catchAll(() => Effect.void))
+  ).pipe(
+    Effect.catchAll((cause) =>
+      logIndexWarning("touch", sessionId, cause).pipe(Effect.asVoid)
+    )
+  )
 
 const removeSessionIndex = (sessionId: string) =>
   Effect.flatMap(SessionIndexStore, (store) =>
     store.remove(sessionId).pipe(Effect.asVoid)
-  ).pipe(Effect.catchAll(() => Effect.void))
+  ).pipe(
+    Effect.catchAll((cause) =>
+      logIndexWarning("remove", sessionId, cause).pipe(Effect.asVoid)
+    )
+  )
 
 const sizeOfRecord = (record: ArtifactRecord) =>
   record.sizeBytes ?? new TextEncoder().encode(record.content).length
@@ -333,7 +346,23 @@ const layerArtifactJournalHandlers = (options?: {
               { discard: true }
             )
           }
-          yield* saveIndex(record.sessionId, { ids: retained, updatedAt: now })
+          yield* saveIndex(record.sessionId, { ids: retained, updatedAt: now }).pipe(
+            Effect.catchAll((error) =>
+              recordStore.remove(recordKey(record.id)).pipe(
+                Effect.catchAll((cleanupCause) =>
+                  Effect.logWarning(
+                    `[ArtifactStore] journal put compensation failed while removing artifact=${record.id} session=${record.sessionId}: ${String(cleanupCause)}`
+                  ).pipe(Effect.asVoid)
+                ),
+                Effect.zipRight(
+                  Effect.logWarning(
+                    `[ArtifactStore] journal put compensation removed artifact=${record.id} after index save failure for session=${record.sessionId}`
+                  )
+                ),
+                Effect.zipRight(Effect.fail(error))
+              )
+            )
+          )
           yield* touchSessionIndex(record.sessionId, now)
         }).pipe(
           Effect.mapError((cause) => mapError("journalHandler", cause))
@@ -351,6 +380,10 @@ const layerArtifactJournalHandlers = (options?: {
           const recordKey = (id: string) => `${prefix}/by-id/${id}`
           const indexKey = (sessionId: string) => `${prefix}/by-session/${sessionId}`
 
+          const deletedRecord = yield* recordStore.get(recordKey(payload.id)).pipe(
+            Effect.mapError((cause) => mapError("loadRecord", cause))
+          )
+
           yield* recordStore.remove(recordKey(payload.id)).pipe(
             Effect.mapError((cause) => mapError("delete", cause))
           )
@@ -360,18 +393,38 @@ const layerArtifactJournalHandlers = (options?: {
           )
           if (Option.isNone(indexOption)) return
           const ids = indexOption.value.ids.filter((id) => id !== payload.id)
-          if (ids.length === 0) {
-            yield* indexStore.remove(indexKey(payload.sessionId)).pipe(
+          const saveDeleteIndex = ids.length === 0
+            ? indexStore.remove(indexKey(payload.sessionId)).pipe(
               Effect.mapError((cause) => mapError("deleteIndex", cause))
             )
-          } else {
-            yield* indexStore.set(indexKey(payload.sessionId), {
+            : indexStore.set(indexKey(payload.sessionId), {
               ids,
               updatedAt: payload.deletedAt
             }).pipe(
               Effect.mapError((cause) => mapError("saveIndex", cause))
             )
-          }
+
+          yield* saveDeleteIndex.pipe(
+            Effect.catchAll((error) => {
+              const restoreDeletedRecord = Option.isNone(deletedRecord)
+                ? Effect.void
+                : recordStore.set(recordKey(payload.id), deletedRecord.value).pipe(
+                  Effect.catchAll((cleanupCause) =>
+                    Effect.logWarning(
+                      `[ArtifactStore] journal delete compensation failed while restoring artifact=${payload.id} session=${payload.sessionId}: ${String(cleanupCause)}`
+                    ).pipe(Effect.asVoid)
+                  )
+                )
+              return restoreDeletedRecord.pipe(
+                Effect.zipRight(
+                  Effect.logWarning(
+                    `[ArtifactStore] journal delete compensation restored artifact=${payload.id} after index save failure for session=${payload.sessionId}`
+                  )
+                ),
+                Effect.zipRight(Effect.fail(error))
+              )
+            })
+          )
           yield* touchSessionIndex(payload.sessionId, payload.deletedAt)
         }).pipe(
           Effect.mapError((cause) => mapError("journalHandler", cause))
@@ -562,17 +615,39 @@ const makeJournaledStore = (options?: {
           Effect.mapError((cause) => toStorageError(storeName, "list", cause))
         )
         if (Option.isNone(indexOption)) return []
-        const offset = Math.max(0, options?.offset ?? 0)
         const ids = indexOption.value.ids
-        const slice = limit === undefined ? ids.slice(offset) : ids.slice(offset, offset + limit)
         const records = yield* Effect.forEach(
-          slice,
+          ids,
           (id) => recordStore.get(recordKey(id)).pipe(
             Effect.mapError((cause) => toStorageError(storeName, "list", cause))
           ),
           { discard: false }
         )
-        return records.flatMap((record) => Option.isSome(record) ? [record.value] : [])
+        const retainedIds: Array<string> = []
+        const byId = new Map<string, ArtifactRecord>()
+        for (let index = 0; index < ids.length; index += 1) {
+          const id = ids[index]
+          const record = records[index]
+          if (!id || !record || Option.isNone(record)) continue
+          retainedIds.push(id)
+          byId.set(id, record.value)
+        }
+        if (retainedIds.length !== ids.length) {
+          const now = yield* Clock.currentTimeMillis
+          yield* saveIndex(sessionId, { ids: retainedIds, updatedAt: now })
+          yield* Effect.logWarning(
+            `[ArtifactStore] repaired stale artifact index for session=${sessionId}; removed ${ids.length - retainedIds.length} missing references`
+          )
+        }
+
+        const offset = Math.max(0, options?.offset ?? 0)
+        const slice = limit === undefined
+          ? retainedIds.slice(offset)
+          : retainedIds.slice(offset, offset + limit)
+        return slice.flatMap((id) => {
+          const record = byId.get(id)
+          return record ? [record] : []
+        })
       })
     )
 
@@ -654,10 +729,10 @@ const makeJournaledStore = (options?: {
               )
             }
             if (retained.length !== index.ids.length) {
-              yield* saveIndex(sessionId, { ids: retained, updatedAt: now })
-            }
-          }),
-        { discard: true }
+                yield* saveIndex(sessionId, { ids: retained, updatedAt: now })
+              }
+            }),
+        { discard: true, concurrency: 1 }
       )
     })
 
@@ -917,7 +992,23 @@ export class ArtifactStore extends Context.Tag("@effect/claude-agent-sdk/Artifac
                 { discard: true }
               )
             }
-            yield* saveIndex(record.sessionId, { ids: retained, updatedAt: now })
+            yield* saveIndex(record.sessionId, { ids: retained, updatedAt: now }).pipe(
+              Effect.catchAll((error) =>
+                recordStore.remove(recordKey(record.id)).pipe(
+                  Effect.catchAll((cleanupCause) =>
+                    Effect.logWarning(
+                      `[ArtifactStore] put compensation failed while removing artifact=${record.id} session=${record.sessionId}: ${String(cleanupCause)}`
+                    ).pipe(Effect.asVoid)
+                  ),
+                  Effect.zipRight(
+                    Effect.logWarning(
+                      `[ArtifactStore] put compensation removed artifact=${record.id} after index save failure for session=${record.sessionId}`
+                    )
+                  ),
+                  Effect.zipRight(Effect.fail(error))
+                )
+              )
+            )
             yield* touchSessionIndex(record.sessionId, now)
           })
         )
@@ -939,17 +1030,39 @@ export class ArtifactStore extends Context.Tag("@effect/claude-agent-sdk/Artifac
               Effect.mapError((cause) => toStorageError(storeName, "list", cause))
             )
             if (Option.isNone(indexOption)) return []
-            const offset = Math.max(0, options?.offset ?? 0)
             const ids = indexOption.value.ids
-            const slice = limit === undefined ? ids.slice(offset) : ids.slice(offset, offset + limit)
             const records = yield* Effect.forEach(
-              slice,
+              ids,
               (id) => recordStore.get(recordKey(id)).pipe(
                 Effect.mapError((cause) => toStorageError(storeName, "list", cause))
               ),
               { discard: false }
             )
-            return records.flatMap((record) => Option.isSome(record) ? [record.value] : [])
+            const retainedIds: Array<string> = []
+            const byId = new Map<string, ArtifactRecord>()
+            for (let index = 0; index < ids.length; index += 1) {
+              const id = ids[index]
+              const record = records[index]
+              if (!id || !record || Option.isNone(record)) continue
+              retainedIds.push(id)
+              byId.set(id, record.value)
+            }
+            if (retainedIds.length !== ids.length) {
+              const now = yield* Clock.currentTimeMillis
+              yield* saveIndex(sessionId, { ids: retainedIds, updatedAt: now })
+              yield* Effect.logWarning(
+                `[ArtifactStore] repaired stale artifact index for session=${sessionId}; removed ${ids.length - retainedIds.length} missing references`
+              )
+            }
+
+            const offset = Math.max(0, options?.offset ?? 0)
+            const slice = limit === undefined
+              ? retainedIds.slice(offset)
+              : retainedIds.slice(offset, offset + limit)
+            return slice.flatMap((id) => {
+              const record = byId.get(id)
+              return record ? [record] : []
+            })
           })
         )
 
@@ -965,7 +1078,23 @@ export class ArtifactStore extends Context.Tag("@effect/claude-agent-sdk/Artifac
             )
             const index = yield* loadIndex(record.sessionId)
             const ids = index.ids.filter((existing) => existing !== id)
-            yield* saveIndex(record.sessionId, { ids, updatedAt: index.updatedAt })
+            yield* saveIndex(record.sessionId, { ids, updatedAt: index.updatedAt }).pipe(
+              Effect.catchAll((error) =>
+                recordStore.set(recordKey(record.id), record).pipe(
+                  Effect.catchAll((cleanupCause) =>
+                    Effect.logWarning(
+                      `[ArtifactStore] delete compensation failed while restoring artifact=${record.id} session=${record.sessionId}: ${String(cleanupCause)}`
+                    ).pipe(Effect.asVoid)
+                  ),
+                  Effect.zipRight(
+                    Effect.logWarning(
+                      `[ArtifactStore] delete compensation restored artifact=${record.id} after index save failure for session=${record.sessionId}`
+                    )
+                  ),
+                  Effect.zipRight(Effect.fail(error))
+                )
+              )
+            )
           })
         )
 
@@ -1021,7 +1150,7 @@ export class ArtifactStore extends Context.Tag("@effect/claude-agent-sdk/Artifac
                   yield* saveIndex(sessionId, { ids: retained, updatedAt: now })
                 }
               }),
-            { discard: true }
+            { discard: true, concurrency: 1 }
           )
         })
 

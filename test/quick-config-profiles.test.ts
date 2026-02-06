@@ -103,7 +103,23 @@ mock.module("@anthropic-ai/claude-agent-sdk", () => ({
     prompts.push(prompt)
     return makeSdkQuery()
   },
-  createSdkMcpServer: (_options: unknown) => ({})
+  createSdkMcpServer: (_options: unknown) => ({}),
+  tool: (name: string, description: string, inputSchema: unknown, handler: (args: unknown, extra: unknown) => Promise<unknown>) => ({ name, description, inputSchema, handler }),
+  unstable_v2_createSession: () => ({
+    sessionId: "mock-session",
+    send: async () => {},
+    stream: async function*() {},
+    close: () => {},
+    [Symbol.asyncDispose]: async () => {}
+  }),
+  unstable_v2_resumeSession: () => ({
+    sessionId: "mock-session",
+    send: async () => {},
+    stream: async function*() {},
+    close: () => {},
+    [Symbol.asyncDispose]: async () => {}
+  }),
+  unstable_v2_prompt: async () => ({ type: "result", subtype: "success" })
 }))
 
 const quickConfigTypeAssertions = () => {

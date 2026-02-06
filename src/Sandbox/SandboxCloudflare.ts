@@ -1,7 +1,12 @@
 import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
-import * as Option from "effect/Option"
+import * as Ref from "effect/Ref"
 import * as Stream from "effect/Stream"
+import { decodeNdjson } from "../internal/ndjson.js"
+import {
+  defaultCloudflareLifecyclePolicy
+} from "../internal/lifecyclePolicy.js"
+import { SDKMessage as SDKMessageSchema } from "../Schema/Message.js"
 import { SandboxService, type ExecResult } from "./SandboxService.js"
 import { SandboxError } from "./SandboxError.js"
 
@@ -35,6 +40,12 @@ export type CloudflareSandboxOptions = {
   readonly sleepAfter?: string | number
   /** ANTHROPIC_API_KEY for the sandboxed agent. */
   readonly apiKey?: string
+  /** Optional Claude Code session token for sandboxed auth flows. */
+  readonly sessionAccessToken?: string
+  /** Additional env vars set once when the sandbox starts. */
+  readonly envVars?: Record<string, string | undefined>
+  /** Optional timeout (milliseconds) applied to sandbox execStream calls. */
+  readonly execTimeoutMs?: number
 }
 
 const mapError = (operation: string, cause: unknown) =>
@@ -50,6 +61,44 @@ type ExecEvent = {
   data?: string
   exitCode?: number
   error?: string
+}
+
+const staleResumeIndicators = [
+  "session not found",
+  "no such session",
+  "invalid session",
+  "unknown session",
+  "resume session not found"
+]
+
+const collectStringFragments = (value: unknown): Array<string> => {
+  if (typeof value === "string") return [value]
+  if (value === null || value === undefined) return []
+  if (Array.isArray(value)) {
+    return value.flatMap(collectStringFragments)
+  }
+  if (typeof value === "object") {
+    return Object.values(value as Record<string, unknown>).flatMap(collectStringFragments)
+  }
+  return []
+}
+
+const isStaleResumeFailure = (error: unknown): boolean => {
+  if (!error || typeof error !== "object") return false
+  const candidate = error as {
+    readonly _tag?: string
+    readonly message?: string
+    readonly cause?: unknown
+  }
+  if (candidate._tag !== "SandboxError") return false
+  const text = [
+    candidate.message ?? "",
+    ...collectStringFragments(candidate.cause)
+  ]
+    .join("\n")
+    .toLowerCase()
+  if (!text.includes("resume") && !text.includes("session")) return false
+  return staleResumeIndicators.some((indicator) => text.includes(indicator))
 }
 
 /**
@@ -101,12 +150,22 @@ export const layerCloudflare = (
           }).pipe(Effect.ignore)
       )
 
-      // Set API key in sandbox environment if provided
-      if (options.apiKey) {
+      const baseEnvVars: Record<string, string | undefined> = {
+        ...(options.apiKey !== undefined
+          ? { ANTHROPIC_API_KEY: options.apiKey }
+          : {}),
+        ...(options.sessionAccessToken !== undefined
+          ? {
+              CLAUDE_CODE_SESSION_ACCESS_TOKEN: options.sessionAccessToken
+            }
+          : {}),
+        ...(options.envVars ?? {})
+      }
+
+      // Set auth + runtime env vars in the sandbox once during layer startup.
+      if (Object.keys(baseEnvVars).length > 0) {
         yield* Effect.tryPromise({
-          try: () => sandbox.setEnvVars({
-            ANTHROPIC_API_KEY: options.apiKey!
-          }),
+          try: () => sandbox.setEnvVars(baseEnvVars),
           catch: (cause) => mapError("setEnvVars", cause)
         })
       }
@@ -154,42 +213,15 @@ export const layerCloudflare = (
           })
       )
 
-      // runAgent: Start a Claude Code session inside the sandbox.
-      //
-      // Strategy:
-      // 1. Exec `claude --output-format stream-json` inside sandbox via execStream()
-      // 2. Parse the SSE event stream using parseSSEStream() from @cloudflare/sandbox
-      // 3. Extract stdout data from SSE events, buffer into complete NDJSON lines
-      // 4. Parse each line as an SDKMessage
-      // 5. Return a QueryHandle wrapping the stream
-      //
-      // IMPORTANT: execStream() returns a ReadableStream of SSE (Server-Sent Events),
-      // NOT raw byte chunks. Each event has shape:
-      //   { type: "start" | "stdout" | "stderr" | "complete" | "error", data?: string, exitCode?: number }
-      // The NDJSON output from Claude Code arrives in "stdout" events' `data` field.
-      // We must use parseSSEStream() to iterate these events, then parse the
-      // concatenated stdout data as NDJSON.
-      //
-      // Lifecycle: Uses nested Effect.acquireRelease:
-      //   - Outer: sandbox session (acquire: getSandbox, release: destroy)
-      //   - Inner: exec stream (acquire: execStream, release: cancel readable)
-      //
-      // The sandboxed Claude Code process handles its own tool loop.
-      // Hooks are applied by the caller (AgentRuntime.decorateHandle)
-      // to the message stream outside the sandbox -- see Section 3.6.
-      //
-      // IMPORTANT: Hooks are JS callbacks (not serializable config).
-      // They CANNOT cross the sandbox boundary. The orchestrator must:
-      // 1. Strip hooks/tools from Options before passing to sandbox
-      // 2. Apply hooks to the message stream post-sandbox
+      // runAgent: Start a Claude Code session inside the sandbox and decode
+      // stream-json events from execStream's SSE channel.
       const runAgent = Effect.fn("SandboxCloudflare.runAgent")(
         (prompt: string, queryOptions?: import("../Schema/Options.js").Options) =>
           Effect.gen(function*() {
             const model = queryOptions?.model ?? "sonnet"
 
-            // Strategy: Write the prompt to a temp file inside the sandbox,
-            // then pass --prompt-file to Claude Code. This avoids any shell
-            // escaping issues with user-provided prompt content.
+            // Strategy: write the prompt to a temp file and pipe it via stdin.
+            // This avoids shell-escaping issues with user-provided content.
             const promptFile = `/tmp/.claude-prompt-${crypto.randomUUID()}.txt`
             yield* Effect.tryPromise({
               try: () => sandbox.writeFile(promptFile, prompt),
@@ -204,71 +236,196 @@ export const layerCloudflare = (
               }).pipe(Effect.ignore)
             )
 
-            // Build command: pipe prompt file via cat to avoid shell escaping issues.
-            // Claude CLI accepts prompt via stdin or -p flag.
-            // --verbose is required with --output-format stream-json in print mode (stdin pipe).
-            const args = [
-              "claude",
-              "--output-format", "stream-json",
-              "--verbose",
-              "--model", shellEscape(model)
-            ]
+            const execTimeoutMs =
+              options.execTimeoutMs ?? defaultCloudflareLifecyclePolicy.defaultExecTimeoutMs
 
-            if (queryOptions?.maxTurns) {
-              args.push("--max-turns", String(queryOptions.maxTurns))
+            const buildCommand = (resumeSessionId: string | undefined) => {
+              // Build command: pipe prompt file via stdin to avoid shell escaping.
+              // --verbose is required with --output-format stream-json in print mode.
+              const args = [
+                "claude",
+                "--output-format", "stream-json",
+                "--verbose",
+                "--model", shellEscape(model)
+              ]
+
+              if (resumeSessionId !== undefined) {
+                args.push("--resume", shellEscape(resumeSessionId))
+              }
+
+              if (queryOptions?.maxTurns) {
+                args.push("--max-turns", String(queryOptions.maxTurns))
+              }
+
+              if (queryOptions?.permissionMode === "bypassPermissions") {
+                args.push("--dangerously-skip-permissions")
+              }
+
+              return `cat ${shellEscape(promptFile)} | ${args.join(" ")}`
             }
 
-            if (queryOptions?.permissionMode === "bypassPermissions") {
-              args.push("--dangerously-skip-permissions")
-            }
-
-            // Pipe prompt file content via stdin to claude
-            const command = `cat ${shellEscape(promptFile)} | ${args.join(" ")}`
-
-            // Acquire the streaming exec with scoped lifecycle.
-            const readable = yield* Effect.acquireRelease(
-              Effect.tryPromise({
-                try: () => sandbox.execStream(command),
-                catch: (cause) => mapError("runAgent.exec", cause)
-              }),
-              (stream) =>
+            const acquireExecStream = (command: string) =>
+              Effect.acquireRelease(
                 Effect.tryPromise({
-                  try: () => stream.cancel(),
-                  catch: () => mapError("cleanup", "best-effort stream cleanup")
-                }).pipe(Effect.ignore)
-            )
+                  try: () =>
+                    sandbox.execStream(command, {
+                      ...(execTimeoutMs !== undefined
+                        ? {
+                            timeout: execTimeoutMs
+                          }
+                        : {}),
+                      ...(queryOptions?.env !== undefined
+                        ? { env: queryOptions.env }
+                        : {})
+                    }),
+                  catch: (cause) => mapError("runAgent.exec", cause)
+                }),
+                (stream) =>
+                  Effect.tryPromise({
+                    try: () => stream.cancel(),
+                    catch: () => mapError("cleanup", "best-effort stream cleanup")
+                  }).pipe(Effect.ignore)
+              )
 
-            // Convert execStream's SSE ReadableStream into an Effect Stream of SDKMessage.
-            //
-            // Pipeline:
-            // 1. parseSSEStream<ExecEvent>(readable) -> AsyncIterable<ExecEvent>
-            // 2. Filter to "stdout" events, extract `data` strings
-            // 3. Feed through Ndjson.unpackString for NDJSON line splitting
-            // 4. Cast parsed JSON to SDKMessage
+            const activeReadableRef = yield* Ref.make<ReadableStream | undefined>(undefined)
 
-            const Ndjson = yield* Effect.tryPromise({
-              try: () => import("@effect/platform/Ndjson") as Promise<
-                typeof import("@effect/platform/Ndjson")
-              >,
-              catch: (cause) => mapError("runAgent.import", cause)
-            })
+            const makeAttemptStream = (
+              resumeSessionId: string | undefined,
+              initialReadable?: ReadableStream
+            ) =>
+              Stream.unwrapScoped(
+                Effect.gen(function*() {
+                  const readable = initialReadable ?? (yield* acquireExecStream(buildCommand(resumeSessionId)))
+                  yield* Ref.set(activeReadableRef, readable)
+                  const stderrBuffer = yield* Ref.make("")
+                  const stdoutCarry = yield* Ref.make("")
 
-            const messageStream = Stream.fromAsyncIterable(
-              parseSSEStream<ExecEvent>(readable),
-              (cause) => mapError("runAgent.sse", cause)
-            ).pipe(
-              Stream.filterMap((event) => {
-                if (event.type === "stdout" && event.data) {
-                  return Option.some(event.data)
-                }
-                return Option.none()
-              }),
-              Stream.pipeThroughChannelOrFail(
-                Ndjson.unpackString({ ignoreEmptyLines: true })
-              ),
-              Stream.mapError((cause) => mapError("runAgent.ndjson", cause)),
-              Stream.map((value) => value as unknown as import("../Schema/Message.js").SDKMessage)
-            )
+                  const drainStdoutChunk = (chunk: string) =>
+                    Effect.gen(function*() {
+                      let buffer = `${yield* Ref.get(stdoutCarry)}${chunk}`
+                      const lines: Array<string> = []
+                      while (true) {
+                        const newlineIndex = buffer.indexOf("\n")
+                        if (newlineIndex >= 0) {
+                          const line = buffer.slice(0, newlineIndex).trim()
+                          buffer = buffer.slice(newlineIndex + 1)
+                          if (line.length > 0) {
+                            lines.push(line)
+                          }
+                          continue
+                        }
+                        const trimmed = buffer.trim()
+                        if (trimmed.length === 0) {
+                          buffer = ""
+                          break
+                        }
+                        const isCompleteJson = yield* Effect.sync(() => {
+                          try {
+                            JSON.parse(trimmed)
+                            return true
+                          } catch {
+                            return false
+                          }
+                        })
+                        if (isCompleteJson) {
+                          lines.push(trimmed)
+                          buffer = ""
+                        }
+                        break
+                      }
+                      yield* Ref.set(stdoutCarry, buffer)
+                      return lines as ReadonlyArray<string>
+                    })
+
+                  const stdoutData = Stream.fromAsyncIterable(
+                    parseSSEStream<ExecEvent>(readable),
+                    (cause) => mapError("runAgent.stream", cause)
+                  ).pipe(
+                    Stream.mapEffect((event) =>
+                      Effect.gen(function*() {
+                        switch (event.type) {
+                          case "stdout": {
+                            if (!event.data || event.data.length === 0) {
+                              return [] as ReadonlyArray<string>
+                            }
+                            return yield* drainStdoutChunk(event.data)
+                          }
+                          case "stderr": {
+                            if (event.data && event.data.length > 0) {
+                              const stderrLine = event.data
+                              yield* Ref.update(stderrBuffer, (current) =>
+                                current.length > 0
+                                  ? `${current}\n${stderrLine}`
+                                  : stderrLine
+                              )
+                            }
+                            return [] as ReadonlyArray<string>
+                          }
+                          case "error": {
+                            const stderr = yield* Ref.get(stderrBuffer)
+                            return yield* SandboxError.make({
+                              message: event.error ?? "Sandbox process reported an error",
+                              operation: "runAgent.exec",
+                              provider: "cloudflare",
+                              cause: stderr.length > 0 ? { event, stderr } : event
+                            })
+                          }
+                          case "complete": {
+                            const exitCode = event.exitCode ?? 0
+                            if (exitCode !== 0) {
+                              const stderr = yield* Ref.get(stderrBuffer)
+                              return yield* SandboxError.make({
+                                message: `Sandbox process exited with code ${exitCode}`,
+                                operation: "runAgent.exec",
+                                provider: "cloudflare",
+                                cause: stderr.length > 0
+                                  ? { event, stderr }
+                                  : event
+                              })
+                            }
+                            return [] as ReadonlyArray<string>
+                          }
+                          default:
+                            return [] as ReadonlyArray<string>
+                        }
+                      })
+                    ),
+                    Stream.flatMap((lines) => Stream.fromIterable(lines)),
+                    Stream.concat(
+                      Stream.unwrap(
+                        drainStdoutChunk("\n").pipe(
+                          Effect.map((lines) => Stream.fromIterable(lines))
+                        )
+                      )
+                    ),
+                    Stream.map((line) => `${line}\n`)
+                  )
+
+                  return decodeNdjson(SDKMessageSchema, (details) =>
+                    mapError("runAgent.ndjson", details)
+                  )(stdoutData)
+                })
+              )
+
+            const resumeSessionId = queryOptions?.resume
+            const initialReadable = yield* acquireExecStream(buildCommand(resumeSessionId))
+            yield* Ref.set(activeReadableRef, initialReadable)
+            const stdoutStream = resumeSessionId === undefined
+              ? makeAttemptStream(undefined, initialReadable)
+              : makeAttemptStream(resumeSessionId, initialReadable).pipe(
+                Stream.catchAll((error) =>
+                  isStaleResumeFailure(error)
+                    ? Stream.unwrapScoped(
+                      Effect.gen(function*() {
+                        yield* Effect.logWarning(
+                          `Cloudflare sandbox resume fallback activated for sandbox=${options.sandboxId} session=${resumeSessionId}`
+                        )
+                        return makeAttemptStream(undefined)
+                      })
+                    )
+                    : Stream.fail(error)
+                )
+              )
 
             const unsupportedInput = (method: string) =>
               Effect.fail(
@@ -280,7 +437,7 @@ export const layerCloudflare = (
               )
 
             const handle: import("../Query.js").QueryHandle = {
-              stream: messageStream,
+              stream: stdoutStream,
 
               // Input methods: explicitly fail -- sandbox stdin is not connected
               send: (_message) => unsupportedInput("send"),
@@ -289,15 +446,31 @@ export const layerCloudflare = (
               closeInput: Effect.void,  // noop -- no input channel to close
 
               // Stream sharing: correct return types per QueryHandle interface
-              share: (config) => Stream.share(messageStream, config ?? { capacity: "unbounded" }),
+              share: (config) =>
+                Stream.share(
+                  stdoutStream,
+                  config ?? defaultCloudflareLifecyclePolicy.defaultShareConfig
+                ),
               broadcast: (n, maximumLag) =>
-                Stream.broadcast(messageStream, n, maximumLag ?? { capacity: "unbounded" }),
+                Stream.broadcast(
+                  stdoutStream,
+                  n,
+                  maximumLag ?? defaultCloudflareLifecyclePolicy.defaultBroadcastLag
+                ),
 
-              // Control
-              interrupt: Effect.tryPromise({
-                try: () => readable.cancel(),
-                catch: (cause) => mapError("interrupt", cause)
-              }).pipe(Effect.asVoid),
+              // Control — cancel the stream to interrupt the sandbox process.
+              interrupt: Ref.get(activeReadableRef).pipe(
+                Effect.flatMap((readable) =>
+                  readable
+                    ? Effect.tryPromise({
+                      try: () => readable.cancel(),
+                      catch: (cause) => mapError("interrupt", cause)
+                    })
+                    : Effect.void
+                ),
+                Effect.ignore,
+                Effect.asVoid
+              ),
 
               // Configuration: noop in sandbox
               setPermissionMode: () => Effect.void,

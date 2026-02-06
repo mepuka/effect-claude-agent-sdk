@@ -6,7 +6,7 @@ export type UUID = typeof UUID.Type
 export type UUIDEncoded = typeof UUID.Encoded
 
 export const ApiKeySource = withIdentifier(
-  Schema.Literal("user", "project", "org", "temporary"),
+  Schema.String,
   "ApiKeySource"
 )
 

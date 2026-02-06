@@ -29,6 +29,9 @@ type QuickConfigCloudflareSandbox = {
   readonly env: CloudflareSandboxEnv
   readonly sleepAfter?: string
   readonly apiKey?: string
+  readonly sessionAccessToken?: string
+  readonly envVars?: Record<string, string | undefined>
+  readonly execTimeoutMs?: number
 }
 
 export type QuickConfig = {
@@ -157,7 +160,14 @@ const resolveSandboxLayer = (
     ...(config.sandbox.sleepAfter !== undefined
       ? { sleepAfter: config.sandbox.sleepAfter }
       : {}),
-    ...(config.sandbox.apiKey !== undefined ? { apiKey: config.sandbox.apiKey } : {})
+    ...(config.sandbox.apiKey !== undefined ? { apiKey: config.sandbox.apiKey } : {}),
+    ...(config.sandbox.sessionAccessToken !== undefined
+      ? { sessionAccessToken: config.sandbox.sessionAccessToken }
+      : {}),
+    ...(config.sandbox.envVars !== undefined ? { envVars: config.sandbox.envVars } : {}),
+    ...(config.sandbox.execTimeoutMs !== undefined
+      ? { execTimeoutMs: config.sandbox.execTimeoutMs }
+      : {})
   })
 }
 

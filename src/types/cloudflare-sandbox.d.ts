@@ -1,4 +1,8 @@
 declare module "@cloudflare/sandbox" {
+  export class Sandbox<Env = unknown> {
+    fetch(request: Request): Promise<Response>
+  }
+
   export type SandboxHandle = {
     exec(command: string, options?: {
       stream?: boolean

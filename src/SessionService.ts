@@ -1,7 +1,10 @@
 import * as Context from "effect/Context"
 import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
+import * as Option from "effect/Option"
 import * as Stream from "effect/Stream"
+import { makeSessionTurnDriver } from "./internal/sessionTurnDriver.js"
+import { SessionConfig, resolveTurnTimeouts } from "./SessionConfig.js"
 import { SessionManager } from "./SessionManager.js"
 import type { SessionHandle, SessionError } from "./Session.js"
 import type { SDKMessage, SDKUserMessage } from "./Schema/Message.js"
@@ -18,6 +21,16 @@ export type SessionHistoryOptions = {
 
 const defaultOutputSource: ChatEventSource = "sdk"
 const defaultInputSource: ChatEventSource = "external"
+
+type SessionConfigService = Context.Tag.Service<typeof SessionConfig>
+
+const resolveRuntimeTimeouts = (
+  Effect.serviceOption(SessionConfig) as Effect.Effect<Option.Option<SessionConfigService>>
+).pipe(
+  Effect.map((configOption) =>
+    Option.isNone(configOption) ? undefined : resolveTurnTimeouts(configOption.value.runtime)
+  )
+)
 
 export class SessionService extends Context.Tag("@effect/claude-agent-sdk/SessionService")<
   SessionService,
@@ -39,19 +52,20 @@ export class SessionService extends Context.Tag("@effect/claude-agent-sdk/Sessio
       Effect.gen(function*() {
         const manager = yield* SessionManager
         const handle = yield* manager.create(options)
-        const turnEffect = Effect.fn("SessionService.turn")(
-          (message: string | SDKUserMessage) =>
-            handle.send(message).pipe(Effect.as(handle.stream))
-        )
-        const turn = (message: string | SDKUserMessage) =>
-          Stream.unwrap(turnEffect(message))
+        const timeouts = yield* resolveRuntimeTimeouts
+        const driver = yield* makeSessionTurnDriver({
+          send: handle.send,
+          stream: handle.stream,
+          close: handle.close,
+          ...(timeouts ? { timeouts } : {})
+        })
         return SessionService.of({
           handle,
           sessionId: handle.sessionId,
-          send: handle.send,
-          turn,
-          stream: handle.stream,
-          close: handle.close
+          send: driver.sendRaw,
+          turn: driver.turn,
+          stream: driver.streamRaw,
+          close: driver.shutdown.pipe(Effect.zipRight(handle.close))
         })
       })
     )
@@ -86,6 +100,7 @@ export class SessionService extends Context.Tag("@effect/claude-agent-sdk/Sessio
         const manager = yield* SessionManager
         const store = yield* ChatHistoryStore
         const handle = yield* manager.create(options)
+        const timeouts = yield* resolveRuntimeTimeouts
 
         const recordOutput = history?.recordOutput ?? true
         const recordInput = history?.recordInput ?? false
@@ -95,20 +110,8 @@ export class SessionService extends Context.Tag("@effect/claude-agent-sdk/Sessio
         const recordMessage = (message: SDKMessage, source: ChatEventSource) =>
           store.appendMessage(message.session_id, message, { source }).pipe(
             Effect.asVoid,
-            Effect.catchAll(() => Effect.void)
+            Effect.catchAllCause(() => Effect.void)
           )
-
-        const [userStream, recordStream] = recordOutput
-          ? yield* Stream.broadcast(handle.stream, 2, 64)
-          : [handle.stream, Stream.empty]
-
-        if (recordOutput) {
-          yield* Effect.forkScoped(
-            Stream.runForEach(recordStream, (message) =>
-              recordMessage(message, outputSource)
-            )
-          )
-        }
 
         const recordInputMessage = (message: string | SDKUserMessage) =>
           typeof message === "string"
@@ -127,7 +130,7 @@ export class SessionService extends Context.Tag("@effect/claude-agent-sdk/Sessio
                     inputSource
                   )
                 ),
-                Effect.catchAll(() => Effect.void)
+                Effect.catchAllCause(() => Effect.void)
               )
             : recordMessage(message, inputSource)
 
@@ -136,20 +139,26 @@ export class SessionService extends Context.Tag("@effect/claude-agent-sdk/Sessio
               handle.send(message).pipe(Effect.tap(() => recordInputMessage(message)))
             )
           : handle.send
-        const turnEffect = Effect.fn("SessionService.turnWithHistory")(
-          (message: string | SDKUserMessage) =>
-            send(message).pipe(Effect.as(userStream))
-        )
-        const turn = (message: string | SDKUserMessage) =>
-          Stream.unwrap(turnEffect(message))
+
+        const onOutputMessage = recordOutput
+          ? (message: SDKMessage) => recordMessage(message, outputSource)
+          : undefined
+
+        const driver = yield* makeSessionTurnDriver({
+          send,
+          stream: handle.stream,
+          close: handle.close,
+          ...(timeouts ? { timeouts } : {}),
+          ...(onOutputMessage ? { onOutputMessage } : {})
+        })
 
         return SessionService.of({
           handle,
           sessionId: handle.sessionId,
-          send,
-          turn,
-          stream: userStream,
-          close: handle.close
+          send: driver.sendRaw,
+          turn: driver.turn,
+          stream: driver.streamRaw,
+          close: driver.shutdown.pipe(Effect.zipRight(handle.close))
         })
       })
     )

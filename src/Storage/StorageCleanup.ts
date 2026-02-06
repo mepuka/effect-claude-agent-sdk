@@ -8,6 +8,11 @@ import { ChatHistoryStore } from "./ChatHistoryStore.js"
 import { StorageConfig } from "./StorageConfig.js"
 import type { StorageError } from "./StorageError.js"
 
+const logCleanupWarning = (phase: string, cause: unknown) =>
+  Effect.logWarning(
+    `[StorageCleanup] ${phase} cleanup failed: ${String(cause)}`
+  )
+
 const runCleanup = Effect.gen(function*() {
   const { settings } = yield* StorageConfig
   const tasks: Array<Effect.Effect<void, StorageError>> = []
@@ -28,7 +33,7 @@ const runCleanup = Effect.gen(function*() {
   }
 
   if (tasks.length === 0) return
-  yield* Effect.forEach(tasks, (task) => task, { discard: true })
+  yield* Effect.forEach(tasks, (task) => task, { discard: true, concurrency: 1 })
 })
 
 export class StorageCleanup extends Context.Tag("@effect/claude-agent-sdk/StorageCleanup")<
@@ -55,12 +60,14 @@ export class StorageCleanup extends Context.Tag("@effect/claude-agent-sdk/Storag
 
       if (settings.cleanup.enabled) {
         if (settings.cleanup.runOnStart) {
-          yield* run.pipe(Effect.catchAll(() => Effect.void))
+          yield* run.pipe(
+            Effect.catchAll((cause) => logCleanupWarning("startup", cause).pipe(Effect.asVoid))
+          )
         }
 
         yield* Effect.forkScoped(
           run.pipe(
-            Effect.catchAll(() => Effect.void),
+            Effect.catchAll((cause) => logCleanupWarning("scheduled", cause).pipe(Effect.asVoid)),
             Effect.repeat(Schedule.spaced(settings.cleanup.interval))
           )
         )

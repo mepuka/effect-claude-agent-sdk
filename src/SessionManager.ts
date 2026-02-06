@@ -2,10 +2,15 @@ import * as Context from "effect/Context"
 import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
 import * as Schema from "effect/Schema"
-import * as Stream from "effect/Stream"
 import type * as Scope from "effect/Scope"
 import { ConfigError } from "./Errors.js"
-import { SessionConfig, type SessionDefaults } from "./SessionConfig.js"
+import { makeSessionTurnDriver } from "./internal/sessionTurnDriver.js"
+import {
+  SessionConfig,
+  resolveTurnTimeouts,
+  type SessionDefaults,
+  type SessionRuntimeSettings
+} from "./SessionConfig.js"
 import {
   createSession,
   prompt,
@@ -13,7 +18,7 @@ import {
   SessionError,
   type SessionHandle
 } from "./Session.js"
-import type { SDKMessage, SDKResultMessage, SDKUserMessage } from "./Schema/Message.js"
+import type { SDKResultMessage } from "./Schema/Message.js"
 import type { SDKSessionOptions } from "./Schema/Session.js"
 import type { SessionService } from "./SessionService.js"
 
@@ -50,24 +55,28 @@ const requireModel = (options: SDKSessionOptions) =>
 
 type SessionServiceApi = Context.Tag.Service<typeof SessionService>
 
-const makeTurn = (
-  send: (message: string | SDKUserMessage) => Effect.Effect<void, SessionError>,
-  stream: Stream.Stream<SDKMessage, SessionError>
-) => {
-  const turnEffect = Effect.fn("SessionManager.turn")(
-    (message: string | SDKUserMessage) => send(message).pipe(Effect.as(stream))
-  )
-  return (message: string | SDKUserMessage) => Stream.unwrap(turnEffect(message))
-}
+const makeSessionServiceWithRuntime = (
+  handle: SessionHandle,
+  runtime: SessionRuntimeSettings
+) =>
+  Effect.gen(function*() {
+    const timeouts = resolveTurnTimeouts(runtime)
 
-const makeSessionService = (handle: SessionHandle): SessionServiceApi => ({
-  handle,
-  sessionId: handle.sessionId,
-  send: handle.send,
-  turn: makeTurn(handle.send, handle.stream),
-  stream: handle.stream,
-  close: handle.close
-})
+    const driver = yield* makeSessionTurnDriver({
+      send: handle.send,
+      stream: handle.stream,
+      close: handle.close,
+      ...(timeouts ? { timeouts } : {})
+    })
+    return {
+      handle,
+      sessionId: handle.sessionId,
+      send: driver.sendRaw,
+      turn: driver.turn,
+      stream: driver.streamRaw,
+      close: driver.shutdown.pipe(Effect.zipRight(handle.close))
+    } satisfies SessionServiceApi
+  })
 
 export class SessionManager extends Context.Tag("@effect/claude-agent-sdk/SessionManager")<
   SessionManager,
@@ -98,7 +107,7 @@ export class SessionManager extends Context.Tag("@effect/claude-agent-sdk/Sessio
   static readonly layer = Layer.effect(
     SessionManager,
     Effect.gen(function*() {
-      const { defaults } = yield* SessionConfig
+      const { defaults, runtime } = yield* SessionConfig
 
       const prepareOptions = Effect.fn("SessionManager.prepareOptions")(
         (options: SDKSessionOptions) =>
@@ -108,14 +117,22 @@ export class SessionManager extends Context.Tag("@effect/claude-agent-sdk/Sessio
       const create = Effect.fn("SessionManager.create")(
         (options: SDKSessionOptions) =>
           prepareOptions(options).pipe(
-            Effect.flatMap((merged) => createSession(merged))
+            Effect.flatMap((merged) =>
+              createSession(merged, {
+                closeDrainTimeout: runtime.closeDrainTimeout
+              })
+            )
           )
       )
 
       const resume = Effect.fn("SessionManager.resume")(
         (sessionId: string, options: SDKSessionOptions) =>
           prepareOptions(options).pipe(
-            Effect.flatMap((merged) => resumeSession(sessionId, merged))
+            Effect.flatMap((merged) =>
+              resumeSession(sessionId, merged, {
+                closeDrainTimeout: runtime.closeDrainTimeout
+              })
+            )
           )
       )
 
@@ -134,7 +151,8 @@ export class SessionManager extends Context.Tag("@effect/claude-agent-sdk/Sessio
           Effect.scoped(
             Effect.gen(function*() {
               const handle = yield* create(options)
-              return yield* use(makeSessionService(handle))
+              const session = yield* makeSessionServiceWithRuntime(handle, runtime)
+              return yield* use(session)
             })
           )
       )

@@ -1,9 +1,12 @@
 import * as Config from "effect/Config"
+import * as Duration from "effect/Duration"
 import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
 import * as Option from "effect/Option"
 import * as Redacted from "effect/Redacted"
 import * as Schema from "effect/Schema"
+import { ConfigError } from "./Errors.js"
+import { defaultSessionLifecyclePolicy } from "./internal/lifecyclePolicy.js"
 import { layerConfigFromEnv } from "./internal/config.js"
 import { missingCredentialsError } from "./internal/credentials.js"
 import type { SDKSessionOptions } from "./Schema/Session.js"
@@ -11,8 +14,26 @@ import { SessionPermissionMode } from "./Schema/Session.js"
 
 export type SessionDefaults = Omit<SDKSessionOptions, "model">
 
+export type SessionRuntimeSettings = {
+  readonly closeDrainTimeout: Duration.DurationInput
+  readonly turnSendTimeout?: Duration.DurationInput
+  readonly turnResultTimeout?: Duration.DurationInput
+}
+
+/** Extract turn driver timeouts from runtime settings. Returns undefined when neither is set. */
+export const resolveTurnTimeouts = (
+  runtime: SessionRuntimeSettings
+): { readonly turnSendTimeout?: Duration.DurationInput; readonly turnResultTimeout?: Duration.DurationInput } | undefined =>
+  runtime.turnSendTimeout !== undefined || runtime.turnResultTimeout !== undefined
+    ? {
+        ...(runtime.turnSendTimeout !== undefined ? { turnSendTimeout: runtime.turnSendTimeout } : {}),
+        ...(runtime.turnResultTimeout !== undefined ? { turnResultTimeout: runtime.turnResultTimeout } : {})
+      }
+    : undefined
+
 export type SessionConfigSettings = {
   readonly defaults: SessionDefaults
+  readonly runtime: SessionRuntimeSettings
 }
 
 const normalizeRedacted = (value: Option.Option<Redacted.Redacted>) =>
@@ -30,6 +51,16 @@ const parseOptionalList = (value: Option.Option<string>) =>
   Option.flatMap(value, (raw) => {
     const entries = parseList(raw)
     return entries.length > 0 ? Option.some(entries) : Option.none()
+  })
+
+const decodeDurationInput = (name: string, value: string) =>
+  Effect.try({
+    try: () => Duration.decode(value as Duration.DurationInput),
+    catch: (cause) =>
+      ConfigError.make({
+        message: `Invalid ${name}`,
+        cause
+      })
   })
 
 const makeSessionConfig = Effect.gen(function*() {
@@ -55,6 +86,9 @@ const makeSessionConfig = Effect.gen(function*() {
   )
   const allowedToolsValue = yield* Config.option(Config.string("ALLOWED_TOOLS"))
   const disallowedToolsValue = yield* Config.option(Config.string("DISALLOWED_TOOLS"))
+  const closeDrainTimeout = yield* Config.option(Config.string("CLOSE_DRAIN_TIMEOUT"))
+  const turnSendTimeout = yield* Config.option(Config.string("TURN_SEND_TIMEOUT"))
+  const turnResultTimeout = yield* Config.option(Config.string("TURN_RESULT_TIMEOUT"))
   const executableArgs = parseOptionalList(executableArgsValue)
   const allowedTools = parseOptionalList(allowedToolsValue)
   const disallowedTools = parseOptionalList(disallowedToolsValue)
@@ -90,7 +124,33 @@ const makeSessionConfig = Effect.gen(function*() {
     ...(env ? { env } : {})
   }
 
-  return { defaults }
+  const runtimeBase = {
+    closeDrainTimeout: Option.isSome(closeDrainTimeout)
+      ? yield* decodeDurationInput("CLOSE_DRAIN_TIMEOUT", closeDrainTimeout.value)
+      : defaultSessionLifecyclePolicy.closeDrainTimeout
+  }
+
+  const runtime: SessionRuntimeSettings = {
+    ...runtimeBase,
+    ...(Option.isSome(turnSendTimeout)
+      ? {
+          turnSendTimeout: yield* decodeDurationInput(
+            "TURN_SEND_TIMEOUT",
+            turnSendTimeout.value
+          )
+        }
+      : {}),
+    ...(Option.isSome(turnResultTimeout)
+      ? {
+          turnResultTimeout: yield* decodeDurationInput(
+            "TURN_RESULT_TIMEOUT",
+            turnResultTimeout.value
+          )
+        }
+      : {})
+  }
+
+  return { defaults, runtime }
 })
 
 export class SessionConfig extends Effect.Service<SessionConfig>()(

@@ -4,6 +4,7 @@ import * as Either from "effect/Either"
 import * as Fiber from "effect/Fiber"
 import * as Option from "effect/Option"
 import * as Stream from "effect/Stream"
+import * as TestClock from "effect/TestClock"
 import { fromSdkSession } from "../src/Session.js"
 import type { SDKMessage, SDKSession, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk"
 import { runEffect } from "./effect-test.js"
@@ -276,6 +277,128 @@ test("Session.close waits for active stream to finish", async () => {
 
   const closeBlocked = await runEffect(program)
   expect(closeBlocked).toBe(true)
+})
+
+test("Session.close respects closeDrainTimeout override", async () => {
+  const streamStarted = createGate()
+  const releaseStream = createGate()
+  let closeCalls = 0
+
+  const sdkSession: SDKSession = {
+    get sessionId() {
+      return "session-1"
+    },
+    send: async () => {},
+    stream: () => {
+      async function* generator() {
+        streamStarted.open()
+        await releaseStream.promise
+      }
+      return generator()
+    },
+    close: () => {
+      closeCalls += 1
+    },
+    [Symbol.asyncDispose]: async () => {}
+  }
+
+  const program = Effect.gen(function*() {
+    const handle = yield* fromSdkSession(sdkSession, {
+      closeDrainTimeout: "20 millis"
+    })
+    const streamFiber = yield* Effect.fork(Stream.runDrain(handle.stream))
+    yield* Effect.promise(() => streamStarted.promise)
+
+    const closeFiber = yield* Effect.fork(handle.close)
+    yield* TestClock.adjust("60 millis")
+    yield* Effect.yieldNow()
+
+    const closeStatus = yield* Fiber.poll(closeFiber)
+    releaseStream.open()
+    yield* Fiber.join(streamFiber)
+    yield* Fiber.join(closeFiber)
+    return closeStatus
+  })
+
+  const closeStatus = await runEffect(program)
+  expect(Option.isSome(closeStatus)).toBe(true)
+  expect(closeCalls).toBe(1)
+})
+
+test("Session.fromSdkSession fails with TransportError on invalid closeDrainTimeout", async () => {
+  const sdkSession: SDKSession = {
+    get sessionId() {
+      return "session-1"
+    },
+    send: async () => {},
+    stream: async function*() {},
+    close: () => {},
+    [Symbol.asyncDispose]: async () => {}
+  }
+
+  const result = await runEffect(
+    Effect.either(
+      fromSdkSession(sdkSession, {
+        closeDrainTimeout: "not-a-duration" as unknown as import("effect/Duration").DurationInput
+      })
+    )
+  )
+
+  expect(Either.isLeft(result)).toBe(true)
+  if (Either.isLeft(result)) {
+    expect(result.left._tag).toBe("TransportError")
+    expect(result.left.message).toBe("Invalid session close drain timeout")
+  }
+})
+
+test("Session.close propagates close failures to concurrent callers", async () => {
+  const streamStarted = createGate()
+  const releaseStream = createGate()
+
+  const sdkSession: SDKSession = {
+    get sessionId() {
+      return "session-1"
+    },
+    send: async () => {},
+    stream: () => {
+      async function* generator() {
+        streamStarted.open()
+        await releaseStream.promise
+      }
+      return generator()
+    },
+    close: () => {
+      throw new Error("close failed")
+    },
+    [Symbol.asyncDispose]: async () => {}
+  }
+
+  const program = Effect.gen(function*() {
+    const handle = yield* fromSdkSession(sdkSession)
+    const streamFiber = yield* Effect.fork(Stream.runDrain(handle.stream))
+    yield* Effect.promise(() => streamStarted.promise)
+
+    const closeFiberA = yield* Effect.fork(Effect.either(handle.close))
+    yield* Effect.yieldNow()
+    const closeFiberB = yield* Effect.fork(Effect.either(handle.close))
+
+    releaseStream.open()
+    yield* Effect.either(Fiber.join(streamFiber))
+
+    const closeA = yield* Fiber.join(closeFiberA)
+    const closeB = yield* Fiber.join(closeFiberB)
+    return { closeA, closeB }
+  })
+
+  const result = await runEffect(program)
+  expect(Either.isLeft(result.closeA)).toBe(true)
+  expect(Either.isLeft(result.closeB)).toBe(true)
+  if (Either.isLeft(result.closeA)) {
+    expect(result.closeA.left._tag).toBe("TransportError")
+  }
+  if (Either.isLeft(result.closeB)) {
+    expect(result.closeB.left._tag).toBe("TransportError")
+  }
 })
 
 test("Session.send fails after close begins", async () => {
