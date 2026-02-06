@@ -4,8 +4,8 @@ import * as Option from "effect/Option"
 import * as Stream from "effect/Stream"
 import type { R2Bucket } from "../src/Storage/StorageR2.js"
 import { defaultArtifactPrefix, defaultChatHistoryPrefix } from "../src/Storage/defaults.js"
-import { runtimeLayer } from "../src/QuickConfig.js"
-import { AgentRuntime, Sandbox } from "../src/index.js"
+import { managedRuntime, runtimeLayer } from "../src/QuickConfig.js"
+import { AgentRuntime, QuerySupervisor, Sandbox } from "../src/index.js"
 
 const makeR2Bucket = (map: Map<string, string>): R2Bucket => ({
   put: async (key, value) => {
@@ -172,7 +172,7 @@ test("runtimeLayer accepts local sandbox profile", () => {
   expect(layer).toBeDefined()
 })
 
-test("runtimeLayer local sandbox profile does not provide SandboxService", async () => {
+test("runtimeLayer local sandbox profile provides SandboxService", async () => {
   const layer = runtimeLayer({
     apiKey: "test-key",
     persistence: "memory",
@@ -187,7 +187,11 @@ test("runtimeLayer local sandbox profile does not provide SandboxService", async
     )
   )
 
-  expect(Option.isNone(sandboxOption)).toBe(true)
+  expect(Option.isSome(sandboxOption)).toBe(true)
+  if (Option.isSome(sandboxOption)) {
+    expect(sandboxOption.value.provider).toBe("local")
+    expect(sandboxOption.value.isolated).toBe(false)
+  }
 })
 
 test("runtimeLayer uses r2-backed stores when storageBackend is r2", async () => {
@@ -249,5 +253,61 @@ test("runtimeLayer ignores deployment profile env hints", () => {
     } else {
       process.env.STORAGE_MODE = originalStorageMode
     }
+  }
+})
+
+test("runtimeLayer exposes QuerySupervisor in output", async () => {
+  const layer = runtimeLayer({
+    apiKey: "test-key",
+    persistence: "memory"
+  })
+
+  const stats = await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function*() {
+        const supervisor = yield* QuerySupervisor
+        return yield* supervisor.stats
+      }).pipe(Effect.provide(layer))
+    )
+  )
+
+  expect(stats.concurrencyLimit).toBe(4)
+})
+
+test("runtimeLayer forwards supervisor config", async () => {
+  const layer = runtimeLayer({
+    apiKey: "test-key",
+    persistence: "memory",
+    supervisor: { emitEvents: true, pendingQueueCapacity: 16 }
+  })
+
+  const stats = await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function*() {
+        const supervisor = yield* QuerySupervisor
+        return yield* supervisor.stats
+      }).pipe(Effect.provide(layer))
+    )
+  )
+
+  expect(stats.pendingQueueCapacity).toBe(16)
+})
+
+test("managedRuntime creates a lifecycle-managed runtime", async () => {
+  const rt = managedRuntime({
+    apiKey: "test-key",
+    persistence: "memory"
+  })
+
+  try {
+    const stats = await rt.runPromise(
+      Effect.gen(function*() {
+        const supervisor = yield* QuerySupervisor
+        return yield* supervisor.stats
+      })
+    )
+    expect(stats.concurrencyLimit).toBe(4)
+  } finally {
+    await rt.dispose()
   }
 })

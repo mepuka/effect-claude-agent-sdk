@@ -1,13 +1,16 @@
 import { BunFileSystem, BunPath } from "@effect/platform-bun"
 import * as Duration from "effect/Duration"
 import * as Layer from "effect/Layer"
+import * as ManagedRuntime from "effect/ManagedRuntime"
 import { AgentRuntime, type PersistenceLayers } from "./AgentRuntime.js"
 import { AgentRuntimeConfig } from "./AgentRuntimeConfig.js"
 import { AgentSdk } from "./AgentSdk.js"
 import { AgentSdkConfig } from "./AgentSdkConfig.js"
 import { QuerySupervisor } from "./QuerySupervisor.js"
-import { QuerySupervisorConfig } from "./QuerySupervisorConfig.js"
+import { QuerySupervisorConfig, type QuerySupervisorSettings } from "./QuerySupervisorConfig.js"
 import { layerCloudflare, type CloudflareSandboxEnv } from "./Sandbox/SandboxCloudflare.js"
+import { layerLocal } from "./Sandbox/SandboxLocal.js"
+import { SandboxService } from "./Sandbox/SandboxService.js"
 import { ArtifactStore } from "./Storage/ArtifactStore.js"
 import { AuditEventStore } from "./Storage/AuditEventStore.js"
 import { ChatHistoryStore } from "./Storage/ChatHistoryStore.js"
@@ -40,6 +43,7 @@ export type QuickConfig = {
     | { readonly sync: string }
   // Execution backend. Different from Options.sandbox (Claude Code sandbox flags).
   readonly sandbox?: "local" | QuickConfigCloudflareSandbox
+  readonly supervisor?: Partial<QuerySupervisorSettings>
   readonly storageBackend?: StorageBackend
   readonly storageMode?: StorageMode
   readonly storageBindings?: CloudflareStorageBindings
@@ -52,6 +56,7 @@ type ResolvedQuickConfig = {
   readonly concurrency: number
   readonly persistence: NonNullable<QuickConfig["persistence"]>
   readonly sandbox?: QuickConfig["sandbox"]
+  readonly supervisor?: Partial<QuerySupervisorSettings>
   readonly storageBackend?: StorageBackend
   readonly storageMode?: StorageMode
   readonly storageBindings?: CloudflareStorageBindings
@@ -61,6 +66,7 @@ const resolveQuickConfig = (config?: QuickConfig): ResolvedQuickConfig => ({
   ...(config?.apiKey !== undefined ? { apiKey: config.apiKey } : {}),
   ...(config?.model !== undefined ? { model: config.model } : {}),
   ...(config?.sandbox !== undefined ? { sandbox: config.sandbox } : {}),
+  ...(config?.supervisor !== undefined ? { supervisor: config.supervisor } : {}),
   ...(config?.storageBackend !== undefined ? { storageBackend: config.storageBackend } : {}),
   ...(config?.storageMode !== undefined ? { storageMode: config.storageMode } : {}),
   ...(config?.storageBindings !== undefined ? { storageBindings: config.storageBindings } : {}),
@@ -87,14 +93,18 @@ const validateQuickConfig = (config: ResolvedQuickConfig) => {
   }
 }
 
-const buildRuntimeLayer = (
-  config: ResolvedQuickConfig
-): Layer.Layer<AgentRuntime, unknown, never> => {
+type RuntimeParts = {
+  readonly runtime: Layer.Layer<AgentRuntime, unknown, never>
+  readonly supervisor: Layer.Layer<QuerySupervisor, unknown, never>
+}
+
+const buildRuntimeParts = (config: ResolvedQuickConfig): RuntimeParts => {
   const runtimeConfigLayer = AgentRuntimeConfig.layerWith({
     queryTimeout: Duration.decode(config.timeout)
   })
   const supervisorConfigLayer = QuerySupervisorConfig.layerWith({
-    concurrencyLimit: config.concurrency
+    concurrencyLimit: config.concurrency,
+    ...config.supervisor
   })
   const sdkOverrides: { apiKey?: string; model?: string } = {}
   if (config.apiKey !== undefined) {
@@ -116,10 +126,12 @@ const buildRuntimeLayer = (
     Layer.provide(sdkLayer)
   )
 
-  return AgentRuntime.layer.pipe(
+  const runtime = AgentRuntime.layer.pipe(
     Layer.provide(runtimeConfigLayer),
     Layer.provide(supervisorLayer)
   )
+
+  return { runtime, supervisor: supervisorLayer }
 }
 
 const memoryPersistenceLayers = (runtime: Layer.Layer<AgentRuntime, unknown, never>): PersistenceLayers => ({
@@ -131,9 +143,13 @@ const memoryPersistenceLayers = (runtime: Layer.Layer<AgentRuntime, unknown, nev
   storageConfig: StorageConfig.layer
 })
 
-const resolveSandboxLayer = (config: ResolvedQuickConfig) => {
-  if (!config.sandbox || config.sandbox === "local") {
-    return undefined
+const resolveSandboxLayer = (
+  config: ResolvedQuickConfig,
+  supervisorLayer: Layer.Layer<QuerySupervisor, unknown, never>
+): Layer.Layer<SandboxService, unknown, never> | undefined => {
+  if (!config.sandbox) return undefined
+  if (config.sandbox === "local") {
+    return layerLocal.pipe(Layer.provide(supervisorLayer))
   }
   return layerCloudflare({
     env: config.sandbox.env,
@@ -190,40 +206,77 @@ const resolveStorageLayers = (config: ResolvedQuickConfig) => {
 
 /**
  * Build a convenience AgentRuntime layer using simplified configuration.
+ *
+ * The returned layer provides `AgentRuntime` and `QuerySupervisor`.
+ * When `sandbox` is configured, `SandboxService` is also provided.
  */
-export const runtimeLayer = (config?: QuickConfig) => {
+export function runtimeLayer(
+  config: QuickConfig & { sandbox: NonNullable<QuickConfig["sandbox"]> }
+): Layer.Layer<AgentRuntime | QuerySupervisor | SandboxService, unknown, never>
+export function runtimeLayer(
+  config?: QuickConfig
+): Layer.Layer<AgentRuntime | QuerySupervisor, unknown, never>
+export function runtimeLayer(config?: QuickConfig) {
   const resolved = resolveQuickConfig(config)
   validateQuickConfig(resolved)
-  const runtime = buildRuntimeLayer(resolved)
-  const sandboxLayer = resolveSandboxLayer(resolved)
+  const { runtime, supervisor } = buildRuntimeParts(resolved)
+  const sandboxLayer = resolveSandboxLayer(resolved, supervisor)
   const runtimeWithSandbox: Layer.Layer<AgentRuntime, unknown, never> = sandboxLayer
     ? runtime.pipe(Layer.provide(sandboxLayer))
     : runtime
 
+  let persistence: Layer.Layer<AgentRuntime, unknown, never>
+
   if (resolved.persistence === "memory") {
-    return AgentRuntime.layerWithPersistence({
+    persistence = AgentRuntime.layerWithPersistence({
       layers: memoryPersistenceLayers(runtimeWithSandbox)
     })
-  }
-
-  if (typeof resolved.persistence === "object" && "sync" in resolved.persistence) {
-    return AgentRuntime.layerWithRemoteSync({
+  } else if (typeof resolved.persistence === "object" && "sync" in resolved.persistence) {
+    persistence = AgentRuntime.layerWithRemoteSync({
       url: resolved.persistence.sync,
       layers: {
         runtime: runtimeWithSandbox
       }
     })
+  } else {
+    const storage = resolveStorageLayers(resolved)
+    persistence = AgentRuntime.layerWithPersistence({
+      layers: {
+        runtime: runtimeWithSandbox,
+        chatHistory: storage.chatHistory,
+        artifacts: storage.artifacts,
+        auditLog: storage.auditLog,
+        sessionIndex: storage.sessionIndex,
+        storageConfig: StorageConfig.layer
+      }
+    })
   }
 
-  const storage = resolveStorageLayers(resolved)
-  return AgentRuntime.layerWithPersistence({
-    layers: {
-      runtime: runtimeWithSandbox,
-      chatHistory: storage.chatHistory,
-      artifacts: storage.artifacts,
-      auditLog: storage.auditLog,
-      sessionIndex: storage.sessionIndex,
-      storageConfig: StorageConfig.layer
-    }
-  })
+  const withSupervisor = Layer.merge(persistence, supervisor)
+  if (sandboxLayer) {
+    return Layer.merge(withSupervisor, sandboxLayer)
+  }
+  return withSupervisor
+}
+
+/**
+ * Build a ManagedRuntime from QuickConfig.
+ *
+ * Unlike `runtimeLayer()` (which returns a Layer for composition),
+ * `managedRuntime()` returns a lifecycle-managed runtime with `.runPromise()`
+ * and `.dispose()`. Services are baked in — no `Effect.provide` needed.
+ *
+ * Ideal for:
+ * - Cloudflare Workers (cache per-isolate, reuse across requests)
+ * - Multi-query sessions (avoid rebuilding layers per call)
+ * - Scripts that want simpler lifecycle management
+ */
+export function managedRuntime(
+  config: QuickConfig & { sandbox: NonNullable<QuickConfig["sandbox"]> }
+): ManagedRuntime.ManagedRuntime<AgentRuntime | QuerySupervisor | SandboxService, unknown>
+export function managedRuntime(
+  config?: QuickConfig
+): ManagedRuntime.ManagedRuntime<AgentRuntime | QuerySupervisor, unknown>
+export function managedRuntime(config?: QuickConfig) {
+  return ManagedRuntime.make(runtimeLayer(config))
 }
