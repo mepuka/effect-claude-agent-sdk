@@ -260,7 +260,7 @@ test("SandboxCloudflare.runAgent parses split NDJSON and strips empty lines", as
   expect(state.writeFileCalls[0]?.content).toBe("prompt-text")
   expect(state.writeFileCalls[0]?.path).toMatch(/^\/tmp\/\.claude-prompt-[^/]+\.txt$/)
   expect(state.execStreamCalls[0]).toMatch(
-    /^claude --output-format stream-json --model 'haiku' --prompt-file '\/tmp\/\.claude-prompt-[^']+\.txt' --max-turns 2 --dangerously-skip-permissions$/
+    /^cat '\/tmp\/\.claude-prompt-[^']+\.txt' \| claude --output-format stream-json --verbose --model 'haiku' --max-turns 2 --dangerously-skip-permissions$/
   )
   expect(state.execCalls.some((command) =>
     command.startsWith("rm -f '/tmp/.claude-prompt-")

@@ -1,7 +1,7 @@
 import * as Console from "effect/Console"
 import * as Effect from "effect/Effect"
 import * as Stream from "effect/Stream"
-import { AgentRuntime, Sandbox, runtimeLayer } from "../src/index.js"
+import { AgentRuntime, MessageFilters, Sandbox, runtimeLayer } from "../src/index.js"
 
 const layer = runtimeLayer({
   model: "sonnet",
@@ -23,10 +23,9 @@ const program = Effect.scoped(
 
     const runtime = yield* AgentRuntime
     const handle = yield* runtime.query("What is 1+1? Reply with just the number.")
-    yield* handle.stream.pipe(
-      Stream.filter((msg) => msg.type === "result"),
+    yield* MessageFilters.filterResultSuccess(handle.stream).pipe(
       Stream.runForEach((msg) =>
-        Console.log(`Result: ${msg.subtype}`)
+        Console.log(`Result: ${msg.subtype}, cost: $${msg.total_cost_usd}`)
       )
     )
   }).pipe(Effect.provide(layer))

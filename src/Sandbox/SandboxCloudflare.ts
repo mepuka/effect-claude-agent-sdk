@@ -204,12 +204,14 @@ export const layerCloudflare = (
               }).pipe(Effect.ignore)
             )
 
-            // Build command with shell-escaped arguments.
+            // Build command: pipe prompt file via cat to avoid shell escaping issues.
+            // Claude CLI accepts prompt via stdin or -p flag.
+            // --verbose is required with --output-format stream-json in print mode (stdin pipe).
             const args = [
               "claude",
               "--output-format", "stream-json",
-              "--model", shellEscape(model),
-              "--prompt-file", shellEscape(promptFile)
+              "--verbose",
+              "--model", shellEscape(model)
             ]
 
             if (queryOptions?.maxTurns) {
@@ -220,7 +222,8 @@ export const layerCloudflare = (
               args.push("--dangerously-skip-permissions")
             }
 
-            const command = args.join(" ")
+            // Pipe prompt file content via stdin to claude
+            const command = `cat ${shellEscape(promptFile)} | ${args.join(" ")}`
 
             // Acquire the streaming exec with scoped lifecycle.
             const readable = yield* Effect.acquireRelease(

@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Effect Agent Demo</title>
+  <style>
+    *,
+    *::before,
+    *::after {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    :root {
+      --bg: #0d1117;
+      --bg-surface: #161b22;
+      --bg-input: #0d1117;
+      --border: #30363d;
+      --text: #e6edf3;
+      --text-muted: #7d8590;
+      --accent: #58a6ff;
+      --accent-dim: color-mix(in oklch, var(--accent) 40%, transparent);
+      --error: #f85149;
+      --success: #3fb950;
+      --font-mono: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, Consolas, monospace;
+      --radius: 8px;
+      --transition: 150ms ease;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-mono);
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    body {
+      display: grid;
+      grid-template-rows: 1fr auto auto;
+      height: 100dvh;
+      overflow: hidden;
+    }
+
+    /* Output area */
+    #output {
+      overflow-y: auto;
+      padding: 1rem;
+      scroll-behavior: smooth;
+      scrollbar-width: thin;
+      scrollbar-color: var(--border) transparent;
+    }
+
+    #output::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    #output::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 3px;
+    }
+
+    .line {
+      white-space: pre-wrap;
+      word-break: break-word;
+      padding-block: 2px;
+    }
+
+    .line--user {
+      color: var(--accent);
+    }
+
+    .line--user::before {
+      content: "> ";
+      color: var(--text-muted);
+    }
+
+    .line--assistant {
+      color: var(--text);
+    }
+
+    .line--error {
+      color: var(--error);
+    }
+
+    .line--system {
+      color: var(--text-muted);
+      font-size: 0.85em;
+    }
+
+    /* Cursor blink during streaming */
+    .cursor::after {
+      content: "\2588";
+      animation: blink 1s steps(1) infinite;
+      color: var(--accent);
+    }
+
+    @keyframes blink {
+      50% { opacity: 0; }
+    }
+
+    /* Input area */
+    #input-area {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 0.5rem;
+      padding: 0.75rem 1rem;
+      border-block-start: 1px solid var(--border);
+      background: var(--bg-surface);
+    }
+
+    #prompt {
+      font-family: var(--font-mono);
+      font-size: 14px;
+      line-height: 1.6;
+      padding: 0.5rem 0.75rem;
+      background: var(--bg-input);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      outline: none;
+      transition: border-color var(--transition);
+    }
+
+    #prompt:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px var(--accent-dim);
+    }
+
+    #prompt:disabled {
+      opacity: 0.5;
+    }
+
+    #prompt::placeholder {
+      color: var(--text-muted);
+    }
+
+    #send {
+      font-family: var(--font-mono);
+      font-size: 14px;
+      padding: 0.5rem 1.25rem;
+      background: var(--accent);
+      color: var(--bg);
+      border: none;
+      border-radius: var(--radius);
+      cursor: pointer;
+      font-weight: 600;
+      transition: opacity var(--transition);
+    }
+
+    #send:hover:not(:disabled) {
+      opacity: 0.85;
+    }
+
+    #send:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    /* Status bar */
+    #status {
+      display: flex;
+      justify-content: space-between;
+      padding: 0.35rem 1rem;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      border-block-start: 1px solid var(--border);
+      background: var(--bg-surface);
+    }
+
+    #status .dot {
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      margin-inline-end: 0.4rem;
+      vertical-align: middle;
+      background: var(--success);
+    }
+
+    #status .dot--streaming {
+      background: var(--accent);
+      animation: pulse 1.5s ease infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+  </style>
+</head>
+<body>
+  <div id="output">
+    <div class="line line--system">Effect Agent Demo &mdash; Cloudflare Sandbox + R2 Storage</div>
+    <div class="line line--system">Type a message below to start.</div>
+  </div>
+
+  <div id="input-area">
+    <input
+      type="text"
+      id="prompt"
+      placeholder="Ask something..."
+      autocomplete="off"
+      autofocus
+    >
+    <button id="send">Send</button>
+  </div>
+
+  <div id="status">
+    <span><span class="dot" id="status-dot"></span><span id="status-text">Ready</span></span>
+    <span id="status-meta"></span>
+  </div>
+
+  <script>
+    const $ = (sel) => document.querySelector(sel);
+    const output = $("#output");
+    const promptInput = $("#prompt");
+    const sendBtn = $("#send");
+    const statusDot = $("#status-dot");
+    const statusText = $("#status-text");
+    const statusMeta = $("#status-meta");
+
+    let streaming = false;
+
+    const addLine = (text, cls = "") => {
+      const el = document.createElement("div");
+      el.className = `line ${cls}`.trim();
+      el.textContent = text;
+      output.appendChild(el);
+      output.scrollTop = output.scrollHeight;
+      return el;
+    };
+
+    const setStreaming = (on) => {
+      streaming = on;
+      promptInput.disabled = on;
+      sendBtn.disabled = on;
+      statusDot.className = on ? "dot dot--streaming" : "dot";
+      statusText.textContent = on ? "Streaming..." : "Ready";
+      if (!on) promptInput.focus();
+    };
+
+    const submit = async () => {
+      const text = promptInput.value.trim();
+      if (!text || streaming) return;
+
+      promptInput.value = "";
+      addLine(text, "line--user");
+      setStreaming(true);
+
+      const responseLine = addLine("", "line--assistant cursor");
+      let fullText = "";
+
+      try {
+        const res = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt: text }),
+        });
+
+        if (!res.ok || !res.body) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
+
+          let eventType = "";
+          for (const line of lines) {
+            if (line.startsWith("event: ")) {
+              eventType = line.slice(7);
+            } else if (line.startsWith("data: ")) {
+              const data = line.slice(6);
+
+              if (eventType === "text") {
+                fullText += data;
+                responseLine.textContent = fullText;
+                output.scrollTop = output.scrollHeight;
+              } else if (eventType === "result") {
+                try {
+                  const meta = JSON.parse(data);
+                  statusMeta.textContent =
+                    `$${meta.cost?.toFixed(4) ?? "?"} | ${meta.turns ?? "?"} turns | ${meta.duration_ms ?? "?"}ms`;
+                } catch {}
+              } else if (eventType === "error") {
+                try {
+                  const err = JSON.parse(data);
+                  addLine(`Error: ${err.message}`, "line--error");
+                } catch {
+                  addLine(`Error: ${data}`, "line--error");
+                }
+              }
+              eventType = "";
+            }
+          }
+        }
+      } catch (err) {
+        addLine(`Error: ${err.message}`, "line--error");
+      } finally {
+        responseLine.classList.remove("cursor");
+        setStreaming(false);
+      }
+    };
+
+    promptInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        submit();
+      }
+    });
+
+    sendBtn.addEventListener("click", submit);
+  </script>
+</body>
+</html>

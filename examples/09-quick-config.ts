@@ -11,7 +11,7 @@
  */
 import * as Effect from "effect/Effect"
 import * as Stream from "effect/Stream"
-import { AgentRuntime, runtimeLayer } from "../src/index.js"
+import { AgentRuntime, MessageFilters, runtimeLayer } from "../src/index.js"
 
 // ---------------------------------------------------------------------------
 // Level 1 – Minimal
@@ -55,13 +55,9 @@ const program = Effect.scoped(
       "What are the three most popular programming languages? Be concise."
     )
 
-    yield* handle.stream.pipe(
-      Stream.filter((msg) => msg.type === "assistant"),
-      Stream.runForEach((msg) =>
-        Effect.sync(() => {
-          const content = "content" in msg ? msg.content : ""
-          process.stdout.write(String(content))
-        })
+    yield* MessageFilters.toTextStream(handle.stream).pipe(
+      Stream.runForEach((chunk) =>
+        Effect.sync(() => process.stdout.write(chunk))
       )
     )
 

@@ -1,0 +1,30 @@
+name = "effect-agent-demo"
+main = "src/worker.ts"
+compatibility_date = "2026-02-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "agent-demo-storage"
+
+# Cloudflare Sandbox container for isolated agent execution
+[[containers]]
+class_name = "Sandbox"
+image = "./Dockerfile"
+instance_type = "basic"
+
+[durable_objects]
+bindings = [{ name = "Sandbox", class_name = "Sandbox" }]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Sandbox"]
+
+# Import .html files as text modules
+[[rules]]
+type = "Text"
+globs = ["**/*.html"]
+
+# Set via: bunx wrangler secret put ANTHROPIC_API_KEY
+# [vars]
+# SYNC_URL = "wss://effect-sync.<subdomain>.workers.dev/event-log"

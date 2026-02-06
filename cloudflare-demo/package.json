@@ -1,0 +1,19 @@
+{
+  "name": "effect-agent-demo",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@cloudflare/sandbox": "^0.7.0",
+    "effect": "3.19.14",
+    "effect-claude-agent-sdk": "file:.."
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250515.0",
+    "typescript": "^5.0.0"
+  }
+}

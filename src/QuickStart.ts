@@ -46,7 +46,7 @@ const extractTextFromStreamEvent = (event: unknown): ReadonlyArray<string> => {
   return fromContent
 }
 
-const extractTextChunks = (message: SDKMessage): ReadonlyArray<string> => {
+export const extractTextChunks = (message: SDKMessage): ReadonlyArray<string> => {
   if (message.type === "assistant") {
     const content = (message as { message?: { content?: unknown } }).message?.content
     return extractTextFromContent(content)
@@ -59,12 +59,12 @@ const extractTextChunks = (message: SDKMessage): ReadonlyArray<string> => {
   return []
 }
 
-const extractResultText = (message: SDKMessage): string | undefined =>
+export const extractResultText = (message: SDKMessage): string | undefined =>
   message.type === "result" && message.subtype === "success"
     ? message.result
     : undefined
 
-const toTextStream = <E>(stream: Stream.Stream<SDKMessage, E>) =>
+export const toTextStream = <E>(stream: Stream.Stream<SDKMessage, E>) =>
   stream.pipe(
     Stream.mapAccum(false, (hasText, message) => {
       const chunks = extractTextChunks(message)
