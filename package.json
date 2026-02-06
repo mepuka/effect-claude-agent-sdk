@@ -58,8 +58,14 @@
     "tsup": "^8.0.0"
   },
   "peerDependencies": {
+    "@cloudflare/sandbox": ">=0.7.0",
     "bun": ">=1.0.0",
     "typescript": "^5"
+  },
+  "peerDependenciesMeta": {
+    "@cloudflare/sandbox": {
+      "optional": true
+    }
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.29",

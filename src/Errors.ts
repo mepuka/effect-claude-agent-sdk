@@ -1,4 +1,6 @@
 import * as Schema from "effect/Schema"
+import { SandboxError } from "./Sandbox/SandboxError.js"
+export { SandboxError } from "./Sandbox/SandboxError.js"
 
 /**
  * Configuration loading or validation failure.
@@ -64,7 +66,8 @@ export const AgentSdkError = Schema.Union(
   DecodeError,
   TransportError,
   HookError,
-  McpError
+  McpError,
+  SandboxError
 )
 
 export type AgentSdkError = typeof AgentSdkError.Type
