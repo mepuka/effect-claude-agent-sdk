@@ -3,6 +3,7 @@ import * as PlatformError from "@effect/platform/Error"
 import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
 import * as Option from "effect/Option"
+import * as Schedule from "effect/Schedule"
 
 /**
  * Helper to create PlatformError.SystemError for KVS operations.
@@ -18,6 +19,20 @@ const storageError = (method: string, description: string, cause?: unknown) =>
     description,
     ...(cause !== undefined ? { cause } : {})
   })
+
+const r2RetrySchedule = Schedule.exponential("100 millis").pipe(
+  Schedule.compose(Schedule.recurs(3))
+)
+
+const tryR2 = <A>(
+  method: string,
+  description: string,
+  run: () => Promise<A>
+) =>
+  Effect.tryPromise({
+    try: run,
+    catch: (cause) => storageError(method, description, cause)
+  }).pipe(Effect.retry(r2RetrySchedule))
 
 /**
  * R2Bucket binding type.
@@ -86,82 +101,63 @@ export const layerR2 = (bucket: R2Bucket): Layer.Layer<KeyValueStore.KeyValueSto
     KeyValueStore.KeyValueStore,
     KeyValueStore.makeStringOnly({
       get: (key) =>
-        Effect.tryPromise({
-          try: async () => {
-            const obj = await bucket.get(key)
-            if (!obj) return Option.none()
-            return Option.some(await obj.text())
-          },
-          catch: (cause) => storageError("get", "R2 get failed", cause)
+        tryR2("get", "R2 get failed", async () => {
+          const obj = await bucket.get(key)
+          if (!obj) return Option.none()
+          return Option.some(await obj.text())
         }),
 
       set: (key, value) =>
-        Effect.tryPromise({
-          try: () => bucket.put(key, value),
-          catch: (cause) => storageError("set", "R2 set failed", cause)
-        }).pipe(Effect.asVoid),
+        tryR2("set", "R2 set failed", () => bucket.put(key, value)).pipe(
+          Effect.asVoid
+        ),
 
       remove: (key) =>
-        Effect.tryPromise({
-          try: () => bucket.delete(key),
-          catch: (cause) => storageError("remove", "R2 remove failed", cause)
-        }),
+        tryR2("remove", "R2 remove failed", () => bucket.delete(key)),
 
       // Uses head() instead of get() to avoid downloading the full object body.
       // R2 head() returns metadata only, which is more efficient for large artifacts.
       has: (key) =>
-        Effect.tryPromise({
-          try: async () => {
-            const obj = await bucket.head(key)
-            return obj !== null
-          },
-          catch: (cause) => storageError("has", "R2 has failed", cause)
+        tryR2("has", "R2 has failed", async () => {
+          const obj = await bucket.head(key)
+          return obj !== null
         }),
 
       isEmpty:
-        Effect.tryPromise({
-          try: async () => {
-            const result = await bucket.list({ limit: 1 })
-            return result.objects.length === 0
-          },
-          catch: (cause) => storageError("isEmpty", "R2 isEmpty failed", cause)
+        tryR2("isEmpty", "R2 isEmpty failed", async () => {
+          const result = await bucket.list({ limit: 1 })
+          return result.objects.length === 0
         }),
 
       // R2 list() returns a discriminated union: cursor only exists when truncated === true.
       // Use type narrowing via `result.truncated` check before accessing `result.cursor`.
       size:
-        Effect.tryPromise({
-          try: async () => {
-            let count = 0
-            let cursor: string | undefined
-            do {
-              const opts = cursor !== undefined
-                ? { limit: 1000, cursor }
-                : { limit: 1000 }
-              const result = await bucket.list(opts)
-              count += result.objects.length
-              cursor = result.truncated ? result.cursor : undefined
-            } while (cursor)
-            return count
-          },
-          catch: (cause) => storageError("size", "R2 size failed", cause)
+        tryR2("size", "R2 size failed", async () => {
+          let count = 0
+          let cursor: string | undefined
+          do {
+            const opts = cursor !== undefined
+              ? { limit: 1000, cursor }
+              : { limit: 1000 }
+            const result = await bucket.list(opts)
+            count += result.objects.length
+            cursor = result.truncated ? result.cursor : undefined
+          } while (cursor)
+          return count
         }),
 
       clear:
-        Effect.tryPromise({
-          try: async () => {
-            let cursor: string | undefined
-            do {
-              const opts = cursor !== undefined
-                ? { limit: 1000, cursor }
-                : { limit: 1000 }
-              const result = await bucket.list(opts)
-              const keys = result.objects.map((o) => o.key)
-              if (keys.length > 0) await bucket.delete(keys)
-              cursor = result.truncated ? result.cursor : undefined
-            } while (cursor)
-          },
-          catch: (cause) => storageError("clear", "R2 clear failed", cause)
+        tryR2("clear", "R2 clear failed", async () => {
+          let cursor: string | undefined
+          do {
+            const opts = cursor !== undefined
+              ? { limit: 1000, cursor }
+              : { limit: 1000 }
+            const result = await bucket.list(opts)
+            const keys = result.objects.map((o) => o.key)
+            if (keys.length > 0) await bucket.delete(keys)
+            cursor = result.truncated ? result.cursor : undefined
+          } while (cursor)
         })
     })
   )

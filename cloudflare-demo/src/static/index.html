@@ -106,13 +106,50 @@
     #input-area {
       display: grid;
       grid-template-columns: 1fr auto;
+      grid-template-areas:
+        "token token"
+        "prompt send";
       gap: 0.5rem;
       padding: 0.75rem 1rem;
       border-block-start: 1px solid var(--border);
       background: var(--bg-surface);
     }
 
+    #token-wrap {
+      grid-area: token;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      color: var(--text-muted);
+      font-size: 0.75rem;
+    }
+
+    #token-wrap label {
+      white-space: nowrap;
+    }
+
+    #api-token {
+      width: 100%;
+      min-width: 0;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      line-height: 1.4;
+      padding: 0.35rem 0.5rem;
+      background: var(--bg-input);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      outline: none;
+      transition: border-color var(--transition);
+    }
+
+    #api-token:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px var(--accent-dim);
+    }
+
     #prompt {
+      grid-area: prompt;
       font-family: var(--font-mono);
       font-size: 14px;
       line-height: 1.6;
@@ -139,6 +176,7 @@
     }
 
     #send {
+      grid-area: send;
       font-family: var(--font-mono);
       font-size: 14px;
       padding: 0.5rem 1.25rem;
@@ -199,6 +237,15 @@
   </div>
 
   <div id="input-area">
+    <div id="token-wrap">
+      <label for="api-token">API token (optional)</label>
+      <input
+        type="password"
+        id="api-token"
+        placeholder="Bearer token for auth-enabled deployments"
+        autocomplete="off"
+      >
+    </div>
     <input
       type="text"
       id="prompt"
@@ -217,8 +264,10 @@
 
   <script>
     const $ = (sel) => document.querySelector(sel);
+    const tokenStorageKey = "effect-agent-demo-api-token";
     const output = $("#output");
     const promptInput = $("#prompt");
+    const tokenInput = $("#api-token");
     const sendBtn = $("#send");
     const statusDot = $("#status-dot");
     const statusText = $("#status-text");
@@ -226,6 +275,17 @@
 
     let streaming = false;
     let sessionId = null;
+
+    tokenInput.value = localStorage.getItem(tokenStorageKey) ?? "";
+
+    tokenInput.addEventListener("input", () => {
+      const token = tokenInput.value.trim();
+      if (token) {
+        localStorage.setItem(tokenStorageKey, token);
+      } else {
+        localStorage.removeItem(tokenStorageKey);
+      }
+    });
 
     const addLine = (text, cls = "") => {
       const el = document.createElement("div");
@@ -245,6 +305,20 @@
       if (!on) promptInput.focus();
     };
 
+    const readErrorMessage = async (response) => {
+      let message = `HTTP ${response.status}`;
+      try {
+        const payload = await response.json();
+        if (payload && typeof payload === "object" && typeof payload.message === "string") {
+          message = payload.message;
+        }
+      } catch {}
+      if (response.status === 401) {
+        return `${message} Set a valid API token above.`;
+      }
+      return message;
+    };
+
     const submit = async () => {
       const text = promptInput.value.trim();
       if (!text || streaming) return;
@@ -257,14 +331,20 @@
       let fullText = "";
 
       try {
+        const headers = { "Content-Type": "application/json" };
+        const token = tokenInput.value.trim();
+        if (token) {
+          headers.Authorization = `Bearer ${token}`;
+        }
+
         const res = await fetch("/api/chat", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers,
           body: JSON.stringify({ prompt: text, ...(sessionId ? { sessionId } : {}) }),
         });
 
         if (!res.ok || !res.body) {
-          throw new Error(`HTTP ${res.status}`);
+          throw new Error(await readErrorMessage(res));
         }
 
         const reader = res.body.getReader();
@@ -331,7 +411,8 @@
           dispatch(eventType, dataLines.join("\n"));
         }
       } catch (err) {
-        addLine(`Error: ${err.message}`, "line--error");
+        const message = err instanceof Error ? err.message : String(err);
+        addLine(`Error: ${message}`, "line--error");
       } finally {
         responseLine.classList.remove("cursor");
         setStreaming(false);

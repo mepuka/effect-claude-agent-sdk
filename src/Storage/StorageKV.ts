@@ -14,6 +14,25 @@ const storageError = (method: string, description: string, cause?: unknown) =>
     ...(cause !== undefined ? { cause } : {})
   })
 
+const kvMinWriteIntervalMs = 1_000
+
+type PendingMutation =
+  | { readonly kind: "set"; readonly value: string }
+  | { readonly kind: "delete" }
+
+type MutationWaiter = {
+  readonly resolve: () => void
+  readonly reject: (error: unknown) => void
+}
+
+type KeyMutationState = {
+  inFlight: boolean
+  timer: ReturnType<typeof setTimeout> | null
+  pending: PendingMutation | undefined
+  waiters: Array<MutationWaiter>
+  lastWriteAt: number
+}
+
 /**
  * KVNamespace binding type.
  *
@@ -63,6 +82,7 @@ type KVListResult =
  * Characteristics:
  * - Eventually consistent reads (up to 60s propagation)
  * - 1 write per second per key limit
+ * - This layer coalesces same-key mutations to reduce write-rate violations
  * - Max value size: 25 MiB
  * - Max key length: 512 bytes
  * - Global distribution with edge caching
@@ -72,9 +92,97 @@ type KVListResult =
  * NOT compatible with journaled mode (blocked at config validation).
  */
 export const layerKV = (namespace: KVNamespace): Layer.Layer<KeyValueStore.KeyValueStore> =>
-  Layer.succeed(
-    KeyValueStore.KeyValueStore,
-    KeyValueStore.makeStringOnly({
+  Layer.succeed(KeyValueStore.KeyValueStore, (() => {
+    const mutationStates = new Map<string, KeyMutationState>()
+
+    const getState = (key: string): KeyMutationState => {
+      const existing = mutationStates.get(key)
+      if (existing) {
+        return existing
+      }
+      const created: KeyMutationState = {
+        inFlight: false,
+        timer: null,
+        pending: undefined,
+        waiters: [],
+        lastWriteAt: 0
+      }
+      mutationStates.set(key, created)
+      return created
+    }
+
+    const maybeCleanupState = (key: string, state: KeyMutationState) => {
+      if (!state.inFlight && state.timer === null && state.pending === undefined && state.waiters.length === 0) {
+        mutationStates.delete(key)
+      }
+    }
+
+    const applyMutation = async (key: string, mutation: PendingMutation, state: KeyMutationState) => {
+      if (mutation.kind === "set") {
+        await namespace.put(key, mutation.value)
+      } else {
+        await namespace.delete(key)
+      }
+      state.lastWriteAt = Date.now()
+    }
+
+    const flushMutation = async (key: string, state: KeyMutationState) => {
+      if (state.inFlight || state.pending === undefined) {
+        return
+      }
+
+      const mutation = state.pending
+      const waiters = state.waiters
+      state.pending = undefined
+      state.waiters = []
+      state.inFlight = true
+
+      try {
+        await applyMutation(key, mutation, state)
+        for (const waiter of waiters) {
+          waiter.resolve()
+        }
+      } catch (error) {
+        for (const waiter of waiters) {
+          waiter.reject(error)
+        }
+      } finally {
+        state.inFlight = false
+        if (state.pending !== undefined) {
+          scheduleFlush(key, state)
+        } else {
+          maybeCleanupState(key, state)
+        }
+      }
+    }
+
+    const scheduleFlush = (key: string, state: KeyMutationState) => {
+      if (state.inFlight || state.timer !== null || state.pending === undefined) {
+        return
+      }
+
+      const elapsed = Date.now() - state.lastWriteAt
+      const delayMs = Math.max(0, kvMinWriteIntervalMs - elapsed)
+      if (delayMs === 0) {
+        void flushMutation(key, state)
+        return
+      }
+
+      state.timer = setTimeout(() => {
+        state.timer = null
+        void flushMutation(key, state)
+      }, delayMs)
+    }
+
+    const enqueueMutation = (key: string, mutation: PendingMutation) =>
+      new Promise<void>((resolve, reject) => {
+        const state = getState(key)
+        state.pending = mutation
+        state.waiters.push({ resolve, reject })
+        scheduleFlush(key, state)
+      })
+
+    return KeyValueStore.makeStringOnly({
       get: (key) =>
         Effect.tryPromise({
           try: async () => {
@@ -86,13 +194,13 @@ export const layerKV = (namespace: KVNamespace): Layer.Layer<KeyValueStore.KeyVa
 
       set: (key, value) =>
         Effect.tryPromise({
-          try: () => namespace.put(key, value),
+          try: () => enqueueMutation(key, { kind: "set", value }),
           catch: (cause) => storageError("set", "KV set failed", cause)
         }),
 
       remove: (key) =>
         Effect.tryPromise({
-          try: () => namespace.delete(key),
+          try: () => enqueueMutation(key, { kind: "delete" }),
           catch: (cause) => storageError("remove", "KV remove failed", cause)
         }),
 
@@ -146,7 +254,7 @@ export const layerKV = (namespace: KVNamespace): Layer.Layer<KeyValueStore.KeyVa
                 : { limit: 1000 }
               const result = await namespace.list(opts)
               for (const k of result.keys) {
-                await namespace.delete(k.name)
+                await enqueueMutation(k.name, { kind: "delete" })
               }
               cursor = !result.list_complete ? result.cursor : undefined
             } while (cursor)
@@ -154,4 +262,4 @@ export const layerKV = (namespace: KVNamespace): Layer.Layer<KeyValueStore.KeyVa
           catch: (cause) => storageError("clear", "KV clear failed", cause)
         })
     })
-  )
+  })())

@@ -187,7 +187,8 @@ test("StorageLayers backend kv wires chat and artifact stores through KV", async
   const kv = makeKVHarness()
   const layers = storageLayers({
     backend: "kv",
-    bindings: { kvNamespace: kv.namespace }
+    bindings: { kvNamespace: kv.namespace },
+    allowUnsafeKv: true
   })
   const storageLayer = Layer.mergeAll(
     layers.chatHistory,
@@ -217,12 +218,22 @@ test("StorageLayers backend kv wires chat and artifact stores through KV", async
   expect(keys.some((key) => key.startsWith(defaultArtifactPrefix))).toBe(true)
 })
 
+test("StorageLayers rejects KV backend by default", () => {
+  expect(() =>
+    storageLayers({
+      backend: "kv",
+      bindings: { kvNamespace: makeKVNamespace() }
+    })
+  ).toThrow("backend 'kv' is disabled by default")
+})
+
 test("StorageLayers rejects KV backend with journaled mode", () => {
   expect(() =>
     storageLayers({
       backend: "kv",
       mode: "journaled",
-      bindings: { kvNamespace: makeKVNamespace() }
+      bindings: { kvNamespace: makeKVNamespace() },
+      allowUnsafeKv: true
     })
   ).toThrow("backend 'kv' cannot be used with mode 'journaled'")
 })
@@ -242,6 +253,7 @@ test("StorageLayers rejects sync when backend is kv", () => {
     storageLayers({
       backend: "kv",
       bindings: { kvNamespace: makeKVNamespace() },
+      allowUnsafeKv: true,
       sync: { url: "ws://localhost:8787" }
     })
   ).toThrow("'sync' is not yet supported with backend 'kv'")

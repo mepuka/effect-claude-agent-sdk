@@ -5,7 +5,11 @@ import * as Schema from "effect/Schema"
 import * as Stream from "effect/Stream"
 import { AgentSdkError } from "../src/Errors.js"
 import type { QueryHandle } from "../src/Query.js"
-import { QuerySupervisor } from "../src/QuerySupervisor.js"
+import {
+  QueryPendingTimeoutError,
+  QueryQueueFullError,
+  QuerySupervisor
+} from "../src/QuerySupervisor.js"
 import { layerLocal } from "../src/Sandbox/SandboxLocal.js"
 import { SandboxError } from "../src/Sandbox/SandboxError.js"
 import { SandboxService } from "../src/Sandbox/SandboxService.js"
@@ -44,6 +48,24 @@ test("SandboxError is part of AgentSdkError union", () => {
   const isAgentError = Schema.is(AgentSdkError)
   expect(isAgentError(error)).toBe(true)
   expect(error._tag).toBe("SandboxError")
+})
+
+test("QuerySupervisor errors are part of AgentSdkError union", () => {
+  const timeoutError = QueryPendingTimeoutError.make({
+    message: "timed out",
+    queryId: "query-1",
+    timeoutMs: 1000
+  })
+  const queueError = QueryQueueFullError.make({
+    message: "queue full",
+    queryId: "query-2",
+    capacity: 4,
+    strategy: "dropping"
+  })
+
+  const isAgentError = Schema.is(AgentSdkError)
+  expect(isAgentError(timeoutError)).toBe(true)
+  expect(isAgentError(queueError)).toBe(true)
 })
 
 test("SandboxLocal.exec uses non-shell arg handling", async () => {

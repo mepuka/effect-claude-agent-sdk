@@ -56,6 +56,7 @@ export type StorageLayerBundleOptions<R = never> = StorageLayerOptions & {
   readonly mode?: StorageMode
   readonly sync?: StorageSyncOptions<R>
   readonly bindings?: CloudflareStorageBindings
+  readonly allowUnsafeKv?: boolean
 }
 
 const resolveDirectory = (directory: string | undefined) =>
@@ -345,6 +346,11 @@ export function layers(
   }
 
   if (backend === "kv") {
+    if (options.allowUnsafeKv !== true) {
+      throw new Error(
+        "StorageLayers: backend 'kv' is disabled by default for runtime storage due KV's 1 write/sec/key limit. Prefer backend 'r2'. Set allowUnsafeKv: true to override."
+      )
+    }
     if (!options.bindings?.kvNamespace) {
       throw new Error("StorageLayers: backend 'kv' requires bindings.kvNamespace")
     }

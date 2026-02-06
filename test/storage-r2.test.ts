@@ -90,3 +90,26 @@ test("R2 clear deletes all keys", async () => {
   })
   await Effect.runPromise(program.pipe(Effect.provide(layerR2(bucket))))
 })
+
+test("R2 set retries transient errors with backoff", async () => {
+  const bucket = makeMockR2Bucket()
+  let attempts = 0
+  const originalPut = bucket.put
+  bucket.put = async (key, value, options) => {
+    attempts += 1
+    if (attempts < 3) {
+      throw new Error("transient R2 write failure")
+    }
+    return originalPut(key, value, options)
+  }
+
+  const program = Effect.gen(function*() {
+    const kv = yield* KeyValueStore.KeyValueStore
+    yield* kv.set("retry-key", "retry-value")
+    return yield* kv.get("retry-key")
+  })
+
+  const value = await Effect.runPromise(program.pipe(Effect.provide(layerR2(bucket))))
+  expect(value).toEqual(Option.some("retry-value"))
+  expect(attempts).toBe(3)
+})

@@ -1,5 +1,28 @@
 # effect-claude-agent-sdk
 
+## Unreleased
+
+### Patch Changes
+
+- **Demo worker hardening** -- Added bearer auth support (`DEMO_AUTH_TOKEN`), strict `/api/chat`
+  payload validation (`prompt` length + `sessionId` format + unknown field rejection), and total
+  request timeout controls (`CHAT_REQUEST_TIMEOUT_MS`) with SSE timeout errors.
+
+- **KV safety gate** -- `storageBackend: "kv"` is now disabled by default in runtime/storage profile
+  builders due KV write-rate limits. Use `allowUnsafeKv: true` to opt in explicitly.
+
+- **Error union expansion** -- Added `QuerySupervisorError` to `AgentSdkError` so supervisor failures
+  can be handled via a single top-level error union.
+
+- **R2 transient resilience** -- Added bounded exponential retry/backoff for Cloudflare R2
+  key-value operations to reduce hard failures on transient provider errors.
+
+- **KV mutation coalescing** -- Added same-key write coalescing in the KV storage layer to reduce
+  write-rate failures when `allowUnsafeKv: true` is explicitly enabled.
+
+- **QuickConfig validation errors** -- Replaced raw `Error` throws in `QuickConfig` validation paths
+  with typed `ConfigError` instances.
+
 ## 0.5.0
 
 ### Minor Changes

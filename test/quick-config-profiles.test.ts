@@ -134,7 +134,8 @@ test("runtimeLayer rejects kv+journaled profile", () => {
       apiKey: "test-key",
       persistence: "filesystem",
       storageBackend: "kv",
-      storageMode: "journaled"
+      storageMode: "journaled",
+      allowUnsafeKv: true
     })
   ).toThrow("storageBackend 'kv' cannot be used with storageMode 'journaled'")
 })
@@ -144,7 +145,8 @@ test("runtimeLayer rejects sync with kv backend", () => {
     runtimeLayer({
       apiKey: "test-key",
       persistence: { sync: "ws://localhost:8787" },
-      storageBackend: "kv"
+      storageBackend: "kv",
+      allowUnsafeKv: true
     })
   ).toThrow("persistence.sync is not supported with storageBackend 'kv'")
 })
@@ -169,12 +171,23 @@ test("runtimeLayer rejects r2 backend without bindings", () => {
   ).toThrow("backend 'r2' requires bindings.r2Bucket")
 })
 
-test("runtimeLayer rejects kv backend without bindings", () => {
+test("runtimeLayer rejects kv backend by default", () => {
   expect(() =>
     runtimeLayer({
       apiKey: "test-key",
       persistence: "filesystem",
       storageBackend: "kv"
+    })
+  ).toThrow("storageBackend 'kv' is disabled by default")
+})
+
+test("runtimeLayer rejects kv backend without bindings when unsafe override is enabled", () => {
+  expect(() =>
+    runtimeLayer({
+      apiKey: "test-key",
+      persistence: "filesystem",
+      storageBackend: "kv",
+      allowUnsafeKv: true
     })
   ).toThrow("backend 'kv' requires bindings.kvNamespace")
 })
@@ -323,6 +336,37 @@ test("managedRuntime creates a lifecycle-managed runtime", async () => {
       })
     )
     expect(stats.concurrencyLimit).toBe(4)
+  } finally {
+    await rt.dispose()
+  }
+})
+
+test("managedRuntime local sandbox profile executes queries and exposes SandboxService", async () => {
+  queryCalls = 0
+  prompts = []
+  const rt = managedRuntime({
+    apiKey: "test-key",
+    persistence: "memory",
+    sandbox: "local"
+  })
+
+  try {
+    const sandbox = await rt.runPromise(
+      Effect.scoped(
+        Effect.gen(function*() {
+          const sandbox = yield* Sandbox.SandboxService
+          const runtime = yield* AgentRuntime
+          const handle = yield* runtime.query("quick-config-local-prompt")
+          yield* Stream.runDrain(handle.stream)
+          return sandbox
+        })
+      )
+    )
+
+    expect(sandbox.provider).toBe("local")
+    expect(sandbox.isolated).toBe(false)
+    expect(queryCalls).toBe(1)
+    expect(prompts).toEqual(["quick-config-local-prompt"])
   } finally {
     await rt.dispose()
   }

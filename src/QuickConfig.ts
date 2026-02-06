@@ -6,6 +6,7 @@ import { AgentRuntime, type PersistenceLayers } from "./AgentRuntime.js"
 import { AgentRuntimeConfig } from "./AgentRuntimeConfig.js"
 import { AgentSdk } from "./AgentSdk.js"
 import { AgentSdkConfig } from "./AgentSdkConfig.js"
+import { ConfigError } from "./Errors.js"
 import { QuerySupervisor } from "./QuerySupervisor.js"
 import { QuerySupervisorConfig, type QuerySupervisorSettings } from "./QuerySupervisorConfig.js"
 import { layerCloudflare, type CloudflareSandboxEnv } from "./Sandbox/SandboxCloudflare.js"
@@ -50,6 +51,7 @@ export type QuickConfig = {
   readonly storageBackend?: StorageBackend
   readonly storageMode?: StorageMode
   readonly storageBindings?: CloudflareStorageBindings
+  readonly allowUnsafeKv?: boolean
 }
 
 type ResolvedQuickConfig = {
@@ -63,6 +65,7 @@ type ResolvedQuickConfig = {
   readonly storageBackend?: StorageBackend
   readonly storageMode?: StorageMode
   readonly storageBindings?: CloudflareStorageBindings
+  readonly allowUnsafeKv?: boolean
 }
 
 const resolveQuickConfig = (config?: QuickConfig): ResolvedQuickConfig => ({
@@ -73,6 +76,7 @@ const resolveQuickConfig = (config?: QuickConfig): ResolvedQuickConfig => ({
   ...(config?.storageBackend !== undefined ? { storageBackend: config.storageBackend } : {}),
   ...(config?.storageMode !== undefined ? { storageMode: config.storageMode } : {}),
   ...(config?.storageBindings !== undefined ? { storageBindings: config.storageBindings } : {}),
+  ...(config?.allowUnsafeKv !== undefined ? { allowUnsafeKv: config.allowUnsafeKv } : {}),
   timeout: config?.timeout ?? Duration.minutes(5),
   concurrency: config?.concurrency ?? 4,
   persistence: config?.persistence ?? "memory"
@@ -84,15 +88,22 @@ const validateQuickConfig = (config: ResolvedQuickConfig) => {
   const isSyncPersistence = typeof config.persistence === "object" && "sync" in config.persistence
 
   if (backend === "kv" && mode === "journaled") {
-    throw new Error(
-      "QuickConfig: storageBackend 'kv' cannot be used with storageMode 'journaled'."
-    )
+    throw ConfigError.make({
+      message: "QuickConfig: storageBackend 'kv' cannot be used with storageMode 'journaled'."
+    })
+  }
+
+  if (backend === "kv" && config.allowUnsafeKv !== true) {
+    throw ConfigError.make({
+      message:
+        "QuickConfig: storageBackend 'kv' is disabled by default due KV's 1 write/sec/key limit. Prefer storageBackend 'r2', or set allowUnsafeKv: true to override."
+    })
   }
 
   if (isSyncPersistence && (backend === "r2" || backend === "kv")) {
-    throw new Error(
-      `QuickConfig: persistence.sync is not supported with storageBackend '${backend}'. Use backend 'bun' or 'filesystem'.`
-    )
+    throw ConfigError.make({
+      message: `QuickConfig: persistence.sync is not supported with storageBackend '${backend}'. Use backend 'bun' or 'filesystem'.`
+    })
   }
 }
 
@@ -147,12 +158,14 @@ const memoryPersistenceLayers = (runtime: Layer.Layer<AgentRuntime, unknown, nev
 })
 
 const resolveSandboxLayer = (
-  config: ResolvedQuickConfig,
-  supervisorLayer: Layer.Layer<QuerySupervisor, unknown, never>
-): Layer.Layer<SandboxService, unknown, never> | undefined => {
+  config: ResolvedQuickConfig
+):
+  | Layer.Layer<SandboxService, unknown, QuerySupervisor>
+  | Layer.Layer<SandboxService, unknown, never>
+  | undefined => {
   if (!config.sandbox) return undefined
   if (config.sandbox === "local") {
-    return layerLocal.pipe(Layer.provide(supervisorLayer))
+    return layerLocal
   }
   return layerCloudflare({
     env: config.sandbox.env,
@@ -179,6 +192,7 @@ const resolveStorageLayers = (config: ResolvedQuickConfig) => {
     : undefined
   const commonOptions = {
     mode,
+    ...(config.allowUnsafeKv !== undefined ? { allowUnsafeKv: config.allowUnsafeKv } : {}),
     ...(directory !== undefined ? { directory } : {}),
     ...(config.storageBindings !== undefined ? { bindings: config.storageBindings } : {})
   }
@@ -230,29 +244,26 @@ export function runtimeLayer(config?: QuickConfig) {
   const resolved = resolveQuickConfig(config)
   validateQuickConfig(resolved)
   const { runtime, supervisor } = buildRuntimeParts(resolved)
-  const sandboxLayer = resolveSandboxLayer(resolved, supervisor)
-  const runtimeWithSandbox: Layer.Layer<AgentRuntime, unknown, never> = sandboxLayer
-    ? runtime.pipe(Layer.provide(sandboxLayer))
-    : runtime
+  const sandboxLayer = resolveSandboxLayer(resolved)
 
   let persistence: Layer.Layer<AgentRuntime, unknown, never>
 
   if (resolved.persistence === "memory") {
     persistence = AgentRuntime.layerWithPersistence({
-      layers: memoryPersistenceLayers(runtimeWithSandbox)
+      layers: memoryPersistenceLayers(runtime)
     })
   } else if (typeof resolved.persistence === "object" && "sync" in resolved.persistence) {
     persistence = AgentRuntime.layerWithRemoteSync({
       url: resolved.persistence.sync,
       layers: {
-        runtime: runtimeWithSandbox
+        runtime
       }
     })
   } else {
     const storage = resolveStorageLayers(resolved)
     persistence = AgentRuntime.layerWithPersistence({
       layers: {
-        runtime: runtimeWithSandbox,
+        runtime,
         chatHistory: storage.chatHistory,
         artifacts: storage.artifacts,
         auditLog: storage.auditLog,
@@ -264,7 +275,7 @@ export function runtimeLayer(config?: QuickConfig) {
 
   const withSupervisor = Layer.merge(persistence, supervisor)
   if (sandboxLayer) {
-    return Layer.merge(withSupervisor, sandboxLayer)
+    return sandboxLayer.pipe(Layer.provideMerge(withSupervisor))
   }
   return withSupervisor
 }

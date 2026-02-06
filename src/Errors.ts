@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema"
+import { QuerySupervisorError } from "./QuerySupervisorError.js"
 import { SandboxError } from "./Sandbox/SandboxError.js"
 export { SandboxError } from "./Sandbox/SandboxError.js"
 
@@ -67,7 +68,8 @@ export const AgentSdkError = Schema.Union(
   TransportError,
   HookError,
   McpError,
-  SandboxError
+  SandboxError,
+  QuerySupervisorError
 )
 
 export type AgentSdkError = typeof AgentSdkError.Type

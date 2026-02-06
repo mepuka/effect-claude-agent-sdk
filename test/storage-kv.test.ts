@@ -61,3 +61,32 @@ test("KV clear deletes all keys sequentially", async () => {
   })
   await Effect.runPromise(program.pipe(Effect.provide(layerKV(ns))))
 })
+
+test("KV coalesces rapid writes to the same key", async () => {
+  const data: Record<string, string> = {}
+  const ns = makeMockKVNamespace(data)
+  let putCalls = 0
+  const originalPut = ns.put
+  ns.put = async (key, value, options) => {
+    putCalls += 1
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    return originalPut(key, value, options)
+  }
+
+  const program = Effect.gen(function*() {
+    const kv = yield* KeyValueStore.KeyValueStore
+    yield* Effect.all(
+      [
+        kv.set("hot-key", "v1"),
+        kv.set("hot-key", "v2"),
+        kv.set("hot-key", "v3")
+      ],
+      { concurrency: "unbounded" }
+    )
+    return yield* kv.get("hot-key")
+  })
+
+  const result = await Effect.runPromise(program.pipe(Effect.provide(layerKV(ns))))
+  expect(result).toEqual(Option.some("v3"))
+  expect(putCalls).toBe(2)
+})

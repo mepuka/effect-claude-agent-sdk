@@ -21,8 +21,27 @@ import type { SDKUserMessage } from "./Schema/Message.js"
 import type { Options } from "./Schema/Options.js"
 import { QuerySupervisorConfig } from "./QuerySupervisorConfig.js"
 import type { PendingQueueStrategy } from "./QuerySupervisorConfig.js"
+import {
+  QueryPendingCanceledError,
+  QueryPendingTimeoutError,
+  QueryQueueFullError,
+  QuerySupervisorError as QuerySupervisorErrorSchema,
+  type QuerySupervisorError as QuerySupervisorErrorType
+} from "./QuerySupervisorError.js"
 import { SandboxError } from "./Sandbox/SandboxError.js"
 import { SandboxService } from "./Sandbox/SandboxService.js"
+
+export const QuerySupervisorError = QuerySupervisorErrorSchema
+export type QuerySupervisorError = QuerySupervisorErrorType
+
+export {
+  QueryPendingCanceledError,
+  QueryPendingTimeoutError,
+  QueryQueueFullError
+} from "./QuerySupervisorError.js"
+export type {
+  QuerySupervisorErrorEncoded
+} from "./QuerySupervisorError.js"
 
 const CompletionStatus = Schema.Literal("success", "failure", "interrupted")
 
@@ -58,54 +77,6 @@ export const QueryEvent = Schema.Union(
 export type QueryEvent = typeof QueryEvent.Type
 export type QueryEventEncoded = typeof QueryEvent.Encoded
 
-/**
- * Raised when the pending queue rejects a new submission.
- */
-export class QueryQueueFullError extends Schema.TaggedError<QueryQueueFullError>()(
-  "QueryQueueFullError",
-  {
-    message: Schema.String,
-    queryId: Schema.String,
-    capacity: Schema.Number,
-    strategy: Schema.String
-  }
-) {}
-
-/**
- * Raised when a pending query waits too long before starting.
- */
-export class QueryPendingTimeoutError extends Schema.TaggedError<QueryPendingTimeoutError>()(
-  "QueryPendingTimeoutError",
-  {
-    message: Schema.String,
-    queryId: Schema.String,
-    timeoutMs: Schema.Number
-  }
-) {}
-
-/**
- * Raised when the submitting scope closes before a query starts.
- */
-export class QueryPendingCanceledError extends Schema.TaggedError<QueryPendingCanceledError>()(
-  "QueryPendingCanceledError",
-  {
-    message: Schema.String,
-    queryId: Schema.String
-  }
-) {}
-
-/**
- * Union of all query supervisor errors.
- */
-export const QuerySupervisorError = Schema.Union(
-  QueryQueueFullError,
-  QueryPendingTimeoutError,
-  QueryPendingCanceledError
-)
-
-export type QuerySupervisorError = typeof QuerySupervisorError.Type
-export type QuerySupervisorErrorEncoded = typeof QuerySupervisorError.Encoded
-
 export const QuerySupervisorStatsSchema = Schema.Struct({
   active: Schema.Number,
   pending: Schema.Number,
@@ -122,7 +93,7 @@ type PendingRequest = {
   readonly prompt: string | AsyncIterable<SDKUserMessage>
   readonly options?: Options
   readonly submittedAt: number
-  readonly deferred: Deferred.Deferred<QueryHandle, AgentSdkError | QuerySupervisorError>
+  readonly deferred: Deferred.Deferred<QueryHandle, AgentSdkError | QuerySupervisorErrorType>
   readonly scope: Scope.Scope
 }
 
@@ -540,7 +511,7 @@ const makeQuerySupervisor = Effect.gen(function*() {
       return yield* startQuery(request)
     }
 
-    const deferred = yield* Deferred.make<QueryHandle, AgentSdkError | QuerySupervisorError>()
+    const deferred = yield* Deferred.make<QueryHandle, AgentSdkError | QuerySupervisorErrorType>()
     const pending: PendingRequest = { ...request, deferred }
 
     yield* Scope.addFinalizer(

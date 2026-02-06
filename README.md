@@ -141,7 +141,7 @@ Notes:
 
 ### Deployment Profiles
 
-Use `storageBackend` and `storageBindings` for Cloudflare R2 or KV storage:
+Use `storageBackend` and `storageBindings` for Cloudflare storage:
 
 ```ts
 import { runtimeLayer } from "effect-claude-agent-sdk"
@@ -154,14 +154,22 @@ const layer = runtimeLayer({
   storageBindings: { r2Bucket: env.MY_R2_BUCKET }
 })
 
-// KV-backed storage
+// KV-backed storage (unsafe override required)
 const layer = runtimeLayer({
   apiKey: "sk-ant-...",
   persistence: "filesystem",
   storageBackend: "kv",
+  allowUnsafeKv: true,
   storageBindings: { kvNamespace: env.MY_KV_NAMESPACE }
 })
 ```
+
+Notes:
+- `storageBackend: "kv"` is blocked by default due KV's 1 write/sec/key limit on hot paths.
+- Prefer `storageBackend: "r2"` for production writes; set `allowUnsafeKv: true` only when you accept KV write-rate constraints.
+- When KV is enabled with `allowUnsafeKv: true`, runtime storage coalesces rapid same-key mutations to reduce rate-limit write failures.
+- R2-backed runtime storage applies bounded exponential retry/backoff for transient R2 API failures.
+- In the `cloudflare-demo` worker, optional env vars `DEMO_AUTH_TOKEN`, `CHAT_REQUEST_TIMEOUT_MS`, and `CHAT_MAX_PROMPT_CHARS` control API auth and request hardening.
 
 ## Core Concepts
 

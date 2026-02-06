@@ -86,6 +86,14 @@ const layer = SyncService.layerWebSocket("wss://<worker>.workers.dev/event-log/<
 }).pipe(Layer.provide(SyncConfig.layer({ syncInterval: "5 seconds" })))
 ```
 
+## Runtime Storage Backend Note
+
+When using this sync worker with `runtimeLayer()` in your app:
+- Prefer `storageBackend: "r2"` for production write-heavy paths.
+- R2-backed runtime storage includes bounded retry/backoff for transient R2 API failures.
+- `storageBackend: "kv"` is disabled by default in SDK runtime profiles due KV write-rate limits.
+- If you still choose KV, explicitly set `allowUnsafeKv: true` (the KV layer coalesces rapid same-key mutations, but R2 is still preferred for sustained write-heavy traffic).
+
 ## Smoke Test
 Run the Cloudflare integration test against the deployed worker:
 
