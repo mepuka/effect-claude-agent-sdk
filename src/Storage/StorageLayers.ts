@@ -10,12 +10,24 @@ import { ChatHistoryStore } from "./ChatHistoryStore.js"
 import { SessionIndexStore } from "./SessionIndexStore.js"
 import { type KVNamespace, layerKV } from "./StorageKV.js"
 import { type R2Bucket, layerR2 } from "./StorageR2.js"
-import { defaultStorageDirectory } from "./defaults.js"
+import {
+  defaultArtifactEventJournalKey,
+  defaultArtifactIdentityKey,
+  defaultArtifactPrefix,
+  defaultAuditEventJournalKey,
+  defaultAuditIdentityKey,
+  defaultChatEventJournalKey,
+  defaultChatHistoryPrefix,
+  defaultChatIdentityKey,
+  defaultSessionIndexPrefix,
+  defaultStorageDirectory
+} from "./defaults.js"
 import type { ConflictPolicy } from "../Sync/ConflictPolicy.js"
 import { SyncConfig, SyncService } from "../Sync/SyncService.js"
 
 export type StorageLayerOptions = {
   readonly directory?: string
+  readonly tenant?: string
 }
 
 export type StorageBackend = "filesystem" | "bun" | "r2" | "kv"
@@ -59,6 +71,47 @@ export type StorageLayerBundleOptions<R = never> = StorageLayerOptions & {
   readonly allowUnsafeKv?: boolean
 }
 
+const tenantPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
+
+const validateTenant = (tenant: string | undefined) => {
+  if (tenant === undefined) return
+  if (!tenantPattern.test(tenant)) {
+    throw new Error(
+      "StorageLayers: invalid tenant format. Expected /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/."
+    )
+  }
+}
+
+type TenantScope = {
+  readonly chatPrefix: string
+  readonly artifactPrefix: string
+  readonly sessionIndexPrefix: string
+  readonly chatJournalKey: string
+  readonly chatIdentityKey: string
+  readonly artifactJournalKey: string
+  readonly artifactIdentityKey: string
+  readonly auditJournalKey: string
+  readonly auditIdentityKey: string
+}
+
+const tenantKey = (base: string, tenant: string | undefined) =>
+  tenant === undefined ? base : `${base}/tenants/${tenant}`
+
+const resolveTenantScope = (tenant: string | undefined): TenantScope => {
+  validateTenant(tenant)
+  return {
+    chatPrefix: tenantKey(defaultChatHistoryPrefix, tenant),
+    artifactPrefix: tenantKey(defaultArtifactPrefix, tenant),
+    sessionIndexPrefix: tenantKey(defaultSessionIndexPrefix, tenant),
+    chatJournalKey: tenantKey(defaultChatEventJournalKey, tenant),
+    chatIdentityKey: tenantKey(defaultChatIdentityKey, tenant),
+    artifactJournalKey: tenantKey(defaultArtifactEventJournalKey, tenant),
+    artifactIdentityKey: tenantKey(defaultArtifactIdentityKey, tenant),
+    auditJournalKey: tenantKey(defaultAuditEventJournalKey, tenant),
+    auditIdentityKey: tenantKey(defaultAuditIdentityKey, tenant)
+  }
+}
+
 const resolveDirectory = (directory: string | undefined) =>
   directory === undefined ? undefined : { directory }
 
@@ -68,44 +121,97 @@ const resolveLayers = (
   mode: "standard" | "journaled"
 ) => {
   const directory = resolveDirectory(options?.directory)
+  const tenantScope = resolveTenantScope(options?.tenant)
   const journaled = mode === "journaled"
+  const chatOptions = journaled
+    ? {
+        ...(directory ?? {}),
+        prefix: tenantScope.chatPrefix,
+        journalKey: tenantScope.chatJournalKey,
+        identityKey: tenantScope.chatIdentityKey
+      }
+    : {
+        ...(directory ?? {}),
+        prefix: tenantScope.chatPrefix
+      }
+  const artifactOptions = journaled
+    ? {
+        ...(directory ?? {}),
+        prefix: tenantScope.artifactPrefix,
+        journalKey: tenantScope.artifactJournalKey,
+        identityKey: tenantScope.artifactIdentityKey
+      }
+    : {
+        ...(directory ?? {}),
+        prefix: tenantScope.artifactPrefix
+      }
+  const auditOptions = {
+    ...(directory ?? {}),
+    journalKey: tenantScope.auditJournalKey,
+    identityKey: tenantScope.auditIdentityKey
+  }
+  const sessionOptions = {
+    ...(directory ?? {}),
+    prefix: tenantScope.sessionIndexPrefix
+  }
   return {
     chatHistory: kind === "bun"
       ? journaled
-        ? ChatHistoryStore.layerJournaledFileSystemBun(directory)
-        : ChatHistoryStore.layerFileSystemBun(directory)
+        ? ChatHistoryStore.layerJournaledFileSystemBun(chatOptions)
+        : ChatHistoryStore.layerFileSystemBun(chatOptions)
       : journaled
-        ? ChatHistoryStore.layerJournaledFileSystem(directory)
-        : ChatHistoryStore.layerFileSystem(directory),
+        ? ChatHistoryStore.layerJournaledFileSystem(chatOptions)
+        : ChatHistoryStore.layerFileSystem(chatOptions),
     artifacts: kind === "bun"
       ? journaled
-        ? ArtifactStore.layerJournaledFileSystemBun(directory)
-        : ArtifactStore.layerFileSystemBun(directory)
+        ? ArtifactStore.layerJournaledFileSystemBun(artifactOptions)
+        : ArtifactStore.layerFileSystemBun(artifactOptions)
       : journaled
-        ? ArtifactStore.layerJournaledFileSystem(directory)
-        : ArtifactStore.layerFileSystem(directory),
+        ? ArtifactStore.layerJournaledFileSystem(artifactOptions)
+        : ArtifactStore.layerFileSystem(artifactOptions),
     auditLog: kind === "bun"
-      ? AuditEventStore.layerFileSystemBun(directory)
-      : AuditEventStore.layerFileSystem(directory),
+      ? AuditEventStore.layerFileSystemBun(auditOptions)
+      : AuditEventStore.layerFileSystem(auditOptions),
     sessionIndex: kind === "bun"
-      ? SessionIndexStore.layerFileSystemBun(directory)
-      : SessionIndexStore.layerFileSystem(directory)
+      ? SessionIndexStore.layerFileSystemBun(sessionOptions)
+      : SessionIndexStore.layerFileSystem(sessionOptions)
   }
 }
 
 const resolveLayersFromKvs = <R>(
   kvsLayer: Layer.Layer<KeyValueStore.KeyValueStore, unknown, R>,
-  mode: StorageMode
-): StorageLayers<unknown, R> => ({
-  chatHistory: mode === "journaled"
-    ? ChatHistoryStore.layerJournaled().pipe(Layer.provide(kvsLayer))
-    : ChatHistoryStore.layerKeyValueStore().pipe(Layer.provide(kvsLayer)),
-  artifacts: mode === "journaled"
-    ? ArtifactStore.layerJournaled().pipe(Layer.provide(kvsLayer))
-    : ArtifactStore.layerKeyValueStore().pipe(Layer.provide(kvsLayer)),
-  auditLog: AuditEventStore.layerKeyValueStore().pipe(Layer.provide(kvsLayer)),
-  sessionIndex: SessionIndexStore.layerKeyValueStore().pipe(Layer.provide(kvsLayer))
-})
+  mode: StorageMode,
+  tenant: string | undefined
+): StorageLayers<unknown, R> => {
+  const tenantScope = resolveTenantScope(tenant)
+  return {
+    chatHistory: mode === "journaled"
+      ? ChatHistoryStore.layerJournaled({
+          prefix: tenantScope.chatPrefix,
+          journalKey: tenantScope.chatJournalKey,
+          identityKey: tenantScope.chatIdentityKey
+        }).pipe(Layer.provide(kvsLayer))
+      : ChatHistoryStore.layerKeyValueStore({
+          prefix: tenantScope.chatPrefix
+        }).pipe(Layer.provide(kvsLayer)),
+    artifacts: mode === "journaled"
+      ? ArtifactStore.layerJournaled({
+          prefix: tenantScope.artifactPrefix,
+          journalKey: tenantScope.artifactJournalKey,
+          identityKey: tenantScope.artifactIdentityKey
+        }).pipe(Layer.provide(kvsLayer))
+      : ArtifactStore.layerKeyValueStore({
+          prefix: tenantScope.artifactPrefix
+        }).pipe(Layer.provide(kvsLayer)),
+    auditLog: AuditEventStore.layerKeyValueStore({
+      journalKey: tenantScope.auditJournalKey,
+      identityKey: tenantScope.auditIdentityKey
+    }).pipe(Layer.provide(kvsLayer)),
+    sessionIndex: SessionIndexStore.layerKeyValueStore({
+      prefix: tenantScope.sessionIndexPrefix
+    }).pipe(Layer.provide(kvsLayer))
+  }
+}
 
 const mergeLayers = <E, R>(layers: StorageLayers<E, R>) =>
   Layer.mergeAll(
@@ -199,8 +305,16 @@ const buildChatSyncLayers = <RBase, ROptions>(
   readonly chatHistory: Layer.Layer<ChatHistoryStore, unknown, RBase | ROptions>
   readonly syncLayer: Layer.Layer<SyncService, unknown, RBase | ROptions>
 } => {
+  const tenantScope = resolveTenantScope(options?.tenant)
   const baseLayer = ChatHistoryStore.layerJournaledWithEventLog(
-    options?.conflictPolicy !== undefined ? { conflictPolicy: options.conflictPolicy } : undefined
+    {
+      prefix: tenantScope.chatPrefix,
+      journalKey: tenantScope.chatJournalKey,
+      identityKey: tenantScope.chatIdentityKey,
+      ...(options?.conflictPolicy !== undefined
+        ? { conflictPolicy: options.conflictPolicy }
+        : {})
+    }
   ).pipe(Layer.provide(kvsLayer))
   const chatHistory = Layer.project(
     baseLayer,
@@ -226,6 +340,7 @@ const buildJournaledSyncLayers = <RBase, ROptions>(
   baseLayers: StorageLayers<unknown, RBase>,
   kvsLayer: Layer.Layer<KeyValueStore.KeyValueStore, unknown, RBase>
 ): StorageLayersWithSync<unknown, RBase | ROptions> => {
+  const tenantScope = resolveTenantScope(options?.tenant)
   const flags = resolveSyncFlags(options)
   let syncLayer: Layer.Layer<SyncService, unknown, RBase | ROptions> | undefined
   const chatHistory = flags.syncChatHistory
@@ -237,14 +352,42 @@ const buildJournaledSyncLayers = <RBase, ROptions>(
         })()
       : ChatHistoryStore.layerJournaledWithSyncWebSocket(
           url,
-          options
+          {
+            prefix: tenantScope.chatPrefix,
+            journalKey: tenantScope.chatJournalKey,
+            identityKey: tenantScope.chatIdentityKey,
+            ...(options?.syncInterval !== undefined
+              ? { syncInterval: options.syncInterval }
+              : {}),
+            ...(options?.disablePing !== undefined
+              ? { disablePing: options.disablePing }
+              : {}),
+            ...(options?.protocols !== undefined ? { protocols: options.protocols } : {}),
+            ...(options?.conflictPolicy !== undefined
+              ? { conflictPolicy: options.conflictPolicy }
+              : {})
+          }
         ).pipe(Layer.provide(kvsLayer))
     : baseLayers.chatHistory
 
   const artifacts = flags.syncArtifacts
     ? ArtifactStore.layerJournaledWithSyncWebSocket(
         url,
-        options
+        {
+          prefix: tenantScope.artifactPrefix,
+          journalKey: tenantScope.artifactJournalKey,
+          identityKey: tenantScope.artifactIdentityKey,
+          ...(options?.syncInterval !== undefined
+            ? { syncInterval: options.syncInterval }
+            : {}),
+          ...(options?.disablePing !== undefined
+            ? { disablePing: options.disablePing }
+            : {}),
+          ...(options?.protocols !== undefined ? { protocols: options.protocols } : {}),
+          ...(options?.conflictPolicy !== undefined
+            ? { conflictPolicy: options.conflictPolicy }
+            : {})
+        }
       ).pipe(Layer.provide(kvsLayer))
     : baseLayers.artifacts
 
@@ -266,7 +409,10 @@ const layersFileSystemJournaledWithSyncWebSocket = <R = never>(
     directory ?? defaultStorageDirectory
   )
   const baseLayers = layersFileSystemJournaled(
-    directory !== undefined ? { directory } : undefined
+    {
+      ...(directory !== undefined ? { directory } : {}),
+      ...(options?.tenant !== undefined ? { tenant: options.tenant } : {})
+    }
   )
   return buildJournaledSyncLayers(url, options, baseLayers, kvsLayer)
 }
@@ -280,7 +426,10 @@ export const layersFileSystemBunJournaledWithSyncWebSocket = <R = never>(
     directory ?? defaultStorageDirectory
   )
   const baseLayers = layersFileSystemBunJournaled(
-    directory !== undefined ? { directory } : undefined
+    {
+      ...(directory !== undefined ? { directory } : {}),
+      ...(options?.tenant !== undefined ? { tenant: options.tenant } : {})
+    }
   )
   return buildJournaledSyncLayers(url, options, baseLayers, kvsLayer)
 }
@@ -312,6 +461,7 @@ export function layers(
 export function layers(
   options: StorageLayerBundleOptions = {}
 ): StorageLayersWithSync<unknown, never> | StorageLayersWithSync<unknown, FileSystem | Path> {
+  validateTenant(options.tenant)
   const backend = options.backend ?? "bun"
   const mode = options.sync ? "journaled" : (options.mode ?? "standard")
   const directory = options.directory
@@ -320,15 +470,25 @@ export function layers(
     if (options.sync) {
       return layersFileSystemBunJournaledWithSyncWebSocket(
         options.sync.url,
-        { ...options.sync, ...(directory !== undefined ? { directory } : {}) }
+        {
+          ...options.sync,
+          ...(directory !== undefined ? { directory } : {}),
+          ...(options.tenant !== undefined ? { tenant: options.tenant } : {})
+        }
       ) as StorageLayersWithSync<unknown, never>
     }
     return mode === "journaled"
       ? (layersFileSystemBunJournaled(
-          directory !== undefined ? { directory } : undefined
+          {
+            ...(directory !== undefined ? { directory } : {}),
+            ...(options.tenant !== undefined ? { tenant: options.tenant } : {})
+          }
         ) as StorageLayersWithSync<unknown, never>)
       : (layersFileSystemBun(
-          directory !== undefined ? { directory } : undefined
+          {
+            ...(directory !== undefined ? { directory } : {}),
+            ...(options.tenant !== undefined ? { tenant: options.tenant } : {})
+          }
         ) as StorageLayersWithSync<unknown, never>)
   }
 
@@ -342,7 +502,7 @@ export function layers(
       )
     }
     const kvsLayer = layerR2(options.bindings.r2Bucket)
-    return resolveLayersFromKvs(kvsLayer, mode) as StorageLayersWithSync<unknown, never>
+    return resolveLayersFromKvs(kvsLayer, mode, options.tenant) as StorageLayersWithSync<unknown, never>
   }
 
   if (backend === "kv") {
@@ -365,21 +525,31 @@ export function layers(
       )
     }
     const kvsLayer = layerKV(options.bindings.kvNamespace)
-    return resolveLayersFromKvs(kvsLayer, mode) as StorageLayersWithSync<unknown, never>
+    return resolveLayersFromKvs(kvsLayer, mode, options.tenant) as StorageLayersWithSync<unknown, never>
   }
 
   if (options.sync) {
     return layersFileSystemJournaledWithSyncWebSocket(
       options.sync.url,
-      { ...options.sync, ...(directory !== undefined ? { directory } : {}) }
+      {
+        ...options.sync,
+        ...(directory !== undefined ? { directory } : {}),
+        ...(options.tenant !== undefined ? { tenant: options.tenant } : {})
+      }
     ) as StorageLayersWithSync<unknown, FileSystem | Path>
   }
 
   return mode === "journaled"
     ? (layersFileSystemJournaled(
-        directory !== undefined ? { directory } : undefined
+        {
+          ...(directory !== undefined ? { directory } : {}),
+          ...(options.tenant !== undefined ? { tenant: options.tenant } : {})
+        }
       ) as StorageLayersWithSync<unknown, FileSystem | Path>)
     : (layersFileSystem(
-        directory !== undefined ? { directory } : undefined
+        {
+          ...(directory !== undefined ? { directory } : {}),
+          ...(options.tenant !== undefined ? { tenant: options.tenant } : {})
+        }
       ) as StorageLayersWithSync<unknown, FileSystem | Path>)
 }

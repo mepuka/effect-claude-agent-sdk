@@ -181,6 +181,16 @@ test("runtimeLayer rejects kv backend by default", () => {
   ).toThrow("storageBackend 'kv' is disabled by default")
 })
 
+test("runtimeLayer rejects invalid tenant format", () => {
+  expect(() =>
+    runtimeLayer({
+      apiKey: "test-key",
+      persistence: "filesystem",
+      tenant: "bad/tenant"
+    })
+  ).toThrow("invalid tenant format")
+})
+
 test("runtimeLayer rejects kv backend without bindings when unsafe override is enabled", () => {
   expect(() =>
     runtimeLayer({
@@ -249,6 +259,36 @@ test("runtimeLayer uses r2-backed stores when storageBackend is r2", async () =>
   const keys = Array.from(map.keys())
   expect(keys.some((key) => key.startsWith(defaultChatHistoryPrefix))).toBe(true)
   expect(keys.some((key) => key.startsWith(defaultArtifactPrefix))).toBe(true)
+})
+
+test("runtimeLayer scopes r2-backed stores by tenant when configured", async () => {
+  queryCalls = 0
+  prompts = []
+  const map = new Map<string, string>()
+  const tenant = "quick-config-tenant"
+  const layer = runtimeLayer({
+    apiKey: "test-key",
+    persistence: "filesystem",
+    storageBackend: "r2",
+    storageBindings: { r2Bucket: makeR2Bucket(map) },
+    tenant
+  })
+
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function*() {
+        const runtime = yield* AgentRuntime
+        const handle = yield* runtime.query("quick-config-r2-tenant-prompt")
+        yield* Stream.runDrain(handle.stream)
+      }).pipe(Effect.provide(layer))
+    )
+  )
+
+  expect(queryCalls).toBe(1)
+  expect(prompts).toEqual(["quick-config-r2-tenant-prompt"])
+  const keys = Array.from(map.keys())
+  expect(keys.some((key) => key.startsWith(`${defaultChatHistoryPrefix}/tenants/${tenant}`))).toBe(true)
+  expect(keys.some((key) => key.startsWith(`${defaultArtifactPrefix}/tenants/${tenant}`))).toBe(true)
 })
 
 test("runtimeLayer ignores deployment profile env hints", () => {

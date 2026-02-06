@@ -52,6 +52,7 @@ export type QuickConfig = {
   readonly storageMode?: StorageMode
   readonly storageBindings?: CloudflareStorageBindings
   readonly allowUnsafeKv?: boolean
+  readonly tenant?: string
 }
 
 type ResolvedQuickConfig = {
@@ -66,6 +67,7 @@ type ResolvedQuickConfig = {
   readonly storageMode?: StorageMode
   readonly storageBindings?: CloudflareStorageBindings
   readonly allowUnsafeKv?: boolean
+  readonly tenant?: string
 }
 
 const resolveQuickConfig = (config?: QuickConfig): ResolvedQuickConfig => ({
@@ -77,10 +79,13 @@ const resolveQuickConfig = (config?: QuickConfig): ResolvedQuickConfig => ({
   ...(config?.storageMode !== undefined ? { storageMode: config.storageMode } : {}),
   ...(config?.storageBindings !== undefined ? { storageBindings: config.storageBindings } : {}),
   ...(config?.allowUnsafeKv !== undefined ? { allowUnsafeKv: config.allowUnsafeKv } : {}),
+  ...(config?.tenant !== undefined ? { tenant: config.tenant } : {}),
   timeout: config?.timeout ?? Duration.minutes(5),
   concurrency: config?.concurrency ?? 4,
   persistence: config?.persistence ?? "memory"
 })
+
+const tenantPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
 
 const validateQuickConfig = (config: ResolvedQuickConfig) => {
   const backend = config.storageBackend
@@ -103,6 +108,12 @@ const validateQuickConfig = (config: ResolvedQuickConfig) => {
   if (isSyncPersistence && (backend === "r2" || backend === "kv")) {
     throw ConfigError.make({
       message: `QuickConfig: persistence.sync is not supported with storageBackend '${backend}'. Use backend 'bun' or 'filesystem'.`
+    })
+  }
+
+  if (config.tenant !== undefined && !tenantPattern.test(config.tenant)) {
+    throw ConfigError.make({
+      message: "QuickConfig: invalid tenant format. Expected /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/."
     })
   }
 }
@@ -193,6 +204,7 @@ const resolveStorageLayers = (config: ResolvedQuickConfig) => {
   const commonOptions = {
     mode,
     ...(config.allowUnsafeKv !== undefined ? { allowUnsafeKv: config.allowUnsafeKv } : {}),
+    ...(config.tenant !== undefined ? { tenant: config.tenant } : {}),
     ...(directory !== undefined ? { directory } : {}),
     ...(config.storageBindings !== undefined ? { bindings: config.storageBindings } : {})
   }

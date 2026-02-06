@@ -183,6 +183,56 @@ test("StorageLayers backend r2 wires chat and artifact stores through R2", async
   expect(keys.some((key) => key.startsWith(defaultArtifactPrefix))).toBe(true)
 })
 
+test("StorageLayers tenant option isolates R2-backed session data", async () => {
+  const r2 = makeR2Harness()
+  const sessionId = "tenant-shared-session"
+  const tenantA = "tenant-a"
+  const tenantB = "tenant-b"
+  const makeStorageLayer = (tenant: string) => {
+    const layers = storageLayers({
+      backend: "r2",
+      bindings: { r2Bucket: r2.bucket },
+      tenant
+    })
+    return Layer.mergeAll(
+      layers.chatHistory,
+      layers.artifacts,
+      layers.auditLog,
+      layers.sessionIndex
+    )
+  }
+
+  const writeProgram = (tenant: string, artifactId: string) =>
+    Effect.gen(function*() {
+      const chat = yield* ChatHistoryStore
+      const artifacts = yield* ArtifactStore
+      yield* chat.appendMessage(sessionId, sampleMessage(sessionId))
+      yield* artifacts.put(sampleArtifact(sessionId, artifactId))
+    }).pipe(Effect.provide(makeStorageLayer(tenant)))
+
+  const readProgram = (tenant: string) =>
+    Effect.gen(function*() {
+      const artifacts = yield* ArtifactStore
+      const records = yield* artifacts.list(sessionId)
+      return records.map((record) => record.id)
+    }).pipe(Effect.provide(makeStorageLayer(tenant)))
+
+  await runEffect(writeProgram(tenantA, "artifact-tenant-a"))
+  await runEffect(writeProgram(tenantB, "artifact-tenant-b"))
+
+  const tenantAArtifacts = await runEffect(readProgram(tenantA))
+  const tenantBArtifacts = await runEffect(readProgram(tenantB))
+
+  expect(tenantAArtifacts).toEqual(["artifact-tenant-a"])
+  expect(tenantBArtifacts).toEqual(["artifact-tenant-b"])
+
+  const keys = Array.from(r2.map.keys())
+  expect(keys.some((key) => key.startsWith(`${defaultChatHistoryPrefix}/tenants/${tenantA}`))).toBe(true)
+  expect(keys.some((key) => key.startsWith(`${defaultChatHistoryPrefix}/tenants/${tenantB}`))).toBe(true)
+  expect(keys.some((key) => key.startsWith(`${defaultArtifactPrefix}/tenants/${tenantA}`))).toBe(true)
+  expect(keys.some((key) => key.startsWith(`${defaultArtifactPrefix}/tenants/${tenantB}`))).toBe(true)
+})
+
 test("StorageLayers backend kv wires chat and artifact stores through KV", async () => {
   const kv = makeKVHarness()
   const layers = storageLayers({
@@ -216,6 +266,16 @@ test("StorageLayers backend kv wires chat and artifact stores through KV", async
   const keys = Array.from(kv.map.keys())
   expect(keys.some((key) => key.startsWith(defaultChatHistoryPrefix))).toBe(true)
   expect(keys.some((key) => key.startsWith(defaultArtifactPrefix))).toBe(true)
+})
+
+test("StorageLayers rejects invalid tenant format", () => {
+  expect(() =>
+    storageLayers({
+      backend: "r2",
+      bindings: { r2Bucket: makeR2Bucket() },
+      tenant: "bad/tenant"
+    })
+  ).toThrow("invalid tenant format")
 })
 
 test("StorageLayers rejects KV backend by default", () => {
