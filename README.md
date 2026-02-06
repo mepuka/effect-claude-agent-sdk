@@ -10,6 +10,9 @@ Effect-native bindings for the [Claude Agent SDK](https://github.com/anthropics/
 - **Lifecycle Hooks** - Effect-based hook handlers for SDK events
 - **Query Supervision** - Concurrency limits, timeouts, and automatic cleanup
 - **Layered Configuration** - Environment-aware config with sensible defaults
+- **Sandbox Execution** - Run agents in isolated Cloudflare Sandbox containers or locally
+- **Deployment Profiles** - One-line config for sandbox provider, storage backend, and storage mode
+- **Cloudflare Storage** - R2 and KV `KeyValueStore` backends for Cloudflare Workers
 
 ## Installation
 
@@ -95,6 +98,67 @@ const program = AgentRuntime.query("Hello").pipe(Effect.provide(layer))
 Notes:
 - Cloudflare Durable Objects do **not** implement Ping/Pong or StopChanges.
   The `cloudflare` provider disables ping by default.
+
+## Sandbox Execution
+
+Run agent queries in isolated Cloudflare Sandbox containers. The `SandboxService` abstracts
+the execution backend -- switch between local passthrough and Cloudflare Sandbox via config.
+
+### Local (passthrough)
+
+```ts
+import { runtimeLayer } from "effect-claude-agent-sdk"
+
+const layer = runtimeLayer({
+  apiKey: "sk-ant-...",
+  persistence: "memory",
+  sandbox: "local"
+})
+```
+
+### Cloudflare Sandbox
+
+Requires `@cloudflare/sandbox` (optional peer dependency, `>=0.7.0`):
+
+```ts
+import { runtimeLayer } from "effect-claude-agent-sdk"
+
+const layer = runtimeLayer({
+  apiKey: "sk-ant-...",
+  persistence: "memory",
+  sandbox: {
+    provider: "cloudflare",
+    sandboxId: "my-sandbox",
+    env: { Sandbox: env.SANDBOX },
+    sleepAfter: "10m",
+    apiKey: env.ANTHROPIC_API_KEY
+  }
+})
+```
+
+### Deployment Profiles
+
+Use `storageBackend` and `storageBindings` for Cloudflare R2 or KV storage:
+
+```ts
+import { runtimeLayer } from "effect-claude-agent-sdk"
+
+// R2-backed storage
+const layer = runtimeLayer({
+  apiKey: "sk-ant-...",
+  persistence: "filesystem",
+  storageBackend: "r2",
+  storageBindings: { r2Bucket: env.MY_R2_BUCKET }
+})
+
+// KV-backed storage
+const layer = runtimeLayer({
+  apiKey: "sk-ant-...",
+  persistence: "filesystem",
+  storageBackend: "kv",
+  storageBindings: { kvNamespace: env.MY_KV_NAMESPACE }
+})
+```
 
 ## Core Concepts
 
@@ -312,6 +376,16 @@ const program = Effect.gen(function* () {
 | `AGENTSDK_LOG_MESSAGES` | Enable SDK message logging | `true` |
 | `AGENTSDK_LOG_QUERY_EVENTS` | Enable query event logging | `true` |
 | `AGENTSDK_LOG_HOOKS` | Enable hook input logging | `true` |
+
+### Deployment Profile Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `SANDBOX_PROVIDER` | Sandbox backend (`local`, `cloudflare`) | None |
+| `SANDBOX_ID` | Sandbox instance ID | None |
+| `SANDBOX_SLEEP_AFTER` | Idle timeout before sandbox sleeps | `10m` |
+| `STORAGE_BACKEND` | Storage backend (`bun`, `filesystem`, `r2`, `kv`) | None |
+| `STORAGE_MODE` | Storage mode (`standard`, `journaled`) | `standard` |
 
 ### Sandbox Settings
 
@@ -585,6 +659,7 @@ Provide it alongside KV layers if you need session enumeration.
 | `QuerySupervisor` | Manages concurrent queries and cleanup |
 | `SessionManager` | Session factory that applies SessionConfig defaults |
 | `SessionService` | Scoped Session wrapper for single-session usage |
+| `SandboxService` | Execution backend abstraction (local or Cloudflare Sandbox) |
 
 ### Modules
 
@@ -595,6 +670,7 @@ Provide it alongside KV layers if you need session enumeration.
 | `Hooks` | Hook handlers and matchers |
 | `Logging` | Logging config, matchers, and stream helpers |
 | `Mcp` | MCP server creation utilities |
+| `Sandbox` | Sandbox execution backends and configuration |
 | `Storage` | Chat history, artifacts, and audit log persistence |
 | `Experimental` | Rate limiting, persisted queues, event logging |
 

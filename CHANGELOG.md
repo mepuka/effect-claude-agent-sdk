@@ -1,5 +1,33 @@
 # effect-claude-agent-sdk
 
+## 0.5.0
+
+### Minor Changes
+
+- **SandboxService** -- Execute agent queries in isolated Cloudflare Sandbox containers or locally.
+  New `Sandbox` module with `SandboxService`, `SandboxError`, `layerLocal`, and `layerCloudflare`.
+  Cloudflare backend uses `@cloudflare/sandbox` (optional peer dep `>=0.7.0`) with SSE streaming,
+  scoped lifecycle management, and full `QueryHandle` implementation.
+
+- **Deployment Profiles** -- Extended `QuickConfig` with `sandbox`, `storageBackend`, `storageMode`,
+  and `storageBindings` options for one-line environment configuration. Extended `AgentSdkConfig`
+  with `SANDBOX_PROVIDER`, `STORAGE_BACKEND`, `STORAGE_MODE` environment variables.
+
+- **R2 and KV Storage Backends** -- Two new `KeyValueStore` implementations backed by Cloudflare R2
+  (object storage) and KV (key-value). Integrated into `StorageLayers` factory with validation for
+  incompatible combinations (KV + journaled, sync + R2/KV).
+
+- **QuerySupervisor extensions** -- Backpressure queue, active query tracking, metrics counters
+  (started/completed/failed/duration), retry with exponential backoff, event emission, and
+  sandbox-aware query dispatch with non-serializable options stripping.
+
+### Breaking Changes
+
+- `SandboxError` added to `AgentSdkError` union. Consumers with exhaustive pattern matches
+  on `AgentSdkError._tag` will get compile-time errors for the unhandled `"SandboxError"` case.
+
+- `@cloudflare/sandbox` moved from `dependencies` to optional `peerDependencies` at `>=0.7.0`.
+
 ## 0.4.1
 
 ### Patch Changes
