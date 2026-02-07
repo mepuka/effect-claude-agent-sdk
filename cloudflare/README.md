@@ -38,7 +38,16 @@ If you set `SYNC_AUTH_TOKEN`, also add it as a worker secret or `vars` entry.
 - **Force D1:** set `SYNC_STORAGE="d1"` (requires `SYNC_DB` binding)
 
 ## Auth
-Set `SYNC_AUTH_TOKEN` (Worker env var). The worker accepts:
+Set `SYNC_AUTH_TOKEN` (Worker env var) for a single shared token, or
+`SYNC_AUTH_TOKENS` as JSON for tenant-specific tokens. Example:
+
+```json
+{ "tenant-a": "token-a", "tenant-b": "token-b", "*": "default-token" }
+```
+
+`SYNC_AUTH_TOKENS` takes precedence per tenant (and supports `*` as a fallback).
+
+The worker accepts:
 - `Authorization: Bearer <token>`
 - `Sec-WebSocket-Protocol: sync-auth.<token>` (browser-friendly, avoids query params)
 

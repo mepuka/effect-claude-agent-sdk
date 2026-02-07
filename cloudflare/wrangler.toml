@@ -18,5 +18,6 @@ new_sqlite_classes = ["SyncDurableObject"]
 # Optional auth token
 # [vars]
 # SYNC_AUTH_TOKEN = "replace-me"
+# SYNC_AUTH_TOKENS = '{"tenant-a":"token-a","tenant-b":"token-b","*":"fallback-token"}'
 # SYNC_ALLOW_QUERY_TOKEN = "true" # allow ?token= (default false)
 # SYNC_STORAGE = "do" # "do" | "d1"

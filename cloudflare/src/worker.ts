@@ -30,7 +30,7 @@ export default {
     if (!tenantResult.ok) {
       return new Response(tenantResult.message, { status: tenantResult.status })
     }
-    const auth = authorizeRequest(request, env, url)
+    const auth = authorizeRequest(request, env, url, tenantResult.tenant)
     if (!auth.ok) {
       return new Response("Unauthorized", {
         status: 401,
