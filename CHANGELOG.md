@@ -23,6 +23,15 @@
 - **QuickConfig validation errors** -- Replaced raw `Error` throws in `QuickConfig` validation paths
   with typed `ConfigError` instances.
 
+- **Tenant-scoped runtime storage** -- Added `tenant` to `QuickConfig` and `Storage.layers(...)`
+  options. Runtime storage keys (chat/artifact/session/audit) are now isolated by tenant prefix.
+
+- **Tenant-aware session APIs** -- Session service schemas and HTTP/RPC handlers now support tenant-
+  scoped session operations, and `SessionPool` now partitions sessions by `(tenant, sessionId)`.
+
+- **Cloudflare tenant auth map** -- Added optional `SYNC_AUTH_TOKENS` JSON map for per-tenant sync
+  auth tokens (with optional `*` fallback), while preserving `SYNC_AUTH_TOKEN` behavior.
+
 ## 0.5.0
 
 ### Minor Changes

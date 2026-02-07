@@ -67,7 +67,7 @@ Effect.runPromise(program)
 
 This repo includes a Cloudflare Worker + Durable Object sync server under `cloudflare/`.
 It exposes `/event-log` (and `/event-log/:tenant`) and supports optional auth via
-`SYNC_AUTH_TOKEN`.
+`SYNC_AUTH_TOKEN` or tenant-scoped `SYNC_AUTH_TOKENS` JSON.
 
 Setup:
 
@@ -77,7 +77,9 @@ bun install --cwd cloudflare
 bun run sync:dev
 ```
 
-Optional: bind a D1 database (`SYNC_DB`) and/or set `SYNC_AUTH_TOKEN` in Wrangler vars.
+Optional: bind a D1 database (`SYNC_DB`) and/or set auth vars in Wrangler:
+- `SYNC_AUTH_TOKEN` for one shared token
+- `SYNC_AUTH_TOKENS` for per-tenant tokens (JSON object, supports `"*"` fallback)
 Deploy with `bun run sync:deploy`.
 
 Client wiring (one-liner):
@@ -98,6 +100,7 @@ const program = AgentRuntime.query("Hello").pipe(Effect.provide(layer))
 Notes:
 - Cloudflare Durable Objects do **not** implement Ping/Pong or StopChanges.
   The `cloudflare` provider disables ping by default.
+- `runtimeLayer({ tenant: "..." })` scopes runtime storage keys and session pool entries by tenant.
 
 ## Sandbox Execution
 
