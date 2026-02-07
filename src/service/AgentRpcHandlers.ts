@@ -16,6 +16,7 @@ import type { QuerySupervisorError } from "../QuerySupervisor.js"
 import { SessionPool } from "../SessionPool.js"
 import { AgentRpcs } from "./AgentRpcs.js"
 import { SessionPoolUnavailableError } from "./SessionErrors.js"
+import { resolveRequestTenant } from "./TenantAccess.js"
 
 type SessionPoolService = Context.Tag.Service<typeof SessionPool>
 type TenantScopedInput = { readonly tenant?: string | undefined }
@@ -103,47 +104,65 @@ export const layer = AgentRpcs.toLayer(
 
     const CreateSession = (input: SessionCreateInputType) =>
       requirePool((pool) =>
-        pool.create(input.options, input.tenant).pipe(
-          Effect.flatMap((handle) => handle.sessionId),
-          Effect.map((sessionId) => ({ sessionId }))
+        resolveRequestTenant(input.tenant).pipe(
+          Effect.flatMap((tenant) =>
+            pool.create(input.options, tenant).pipe(
+              Effect.flatMap((handle) => handle.sessionId),
+              Effect.map((sessionId) => ({ sessionId }))
+            ))
         )
       )
 
     const ResumeSession = (input: ResumeSessionInput) =>
       requirePool((pool) =>
-        pool.get(input.sessionId, input.options, input.tenant).pipe(
-          Effect.flatMap((handle) => handle.sessionId),
-          Effect.map((sessionId) => ({ sessionId }))
+        resolveRequestTenant(input.tenant).pipe(
+          Effect.flatMap((tenant) =>
+            pool.get(input.sessionId, input.options, tenant).pipe(
+              Effect.flatMap((handle) => handle.sessionId),
+              Effect.map((sessionId) => ({ sessionId }))
+            ))
         )
       )
 
     const SendSession = (input: SendSessionInput) =>
       requirePool((pool) =>
-        pool.get(input.sessionId, undefined, input.tenant).pipe(
-          Effect.flatMap((handle) => handle.send(input.message)),
-          Effect.asVoid
+        resolveRequestTenant(input.tenant).pipe(
+          Effect.flatMap((tenant) =>
+            pool.get(input.sessionId, undefined, tenant).pipe(
+              Effect.flatMap((handle) => handle.send(input.message)),
+              Effect.asVoid
+            ))
         )
       )
 
     const SessionStream = (input: SessionRefInput) =>
       Stream.unwrap(
         requirePool((pool) =>
-          pool.get(input.sessionId, undefined, input.tenant).pipe(
-            Effect.map((handle) => handle.stream)
+          resolveRequestTenant(input.tenant).pipe(
+            Effect.flatMap((tenant) =>
+              pool.get(input.sessionId, undefined, tenant).pipe(
+                Effect.map((handle) => handle.stream)
+              ))
           )
         )
       )
 
     const CloseSession = (input: SessionRefInput) =>
       requirePool((pool) =>
-        pool.close(input.sessionId, input.tenant).pipe(Effect.asVoid)
+        resolveRequestTenant(input.tenant).pipe(
+          Effect.flatMap((tenant) => pool.close(input.sessionId, tenant).pipe(Effect.asVoid))
+        )
       )
 
     const ListSessions = () =>
       requirePool((pool) => pool.list)
 
     const ListSessionsByTenant = (input: TenantScopedInput) =>
-      requirePool((pool) => pool.listByTenant(input.tenant))
+      requirePool((pool) =>
+        resolveRequestTenant(input.tenant).pipe(
+          Effect.flatMap((tenant) => pool.listByTenant(tenant))
+        )
+      )
 
     return {
       QueryStream,

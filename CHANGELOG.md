@@ -32,6 +32,10 @@
 - **Cloudflare tenant auth map** -- Added optional `SYNC_AUTH_TOKENS` JSON map for per-tenant sync
   auth tokens (with optional `*` fallback), while preserving `SYNC_AUTH_TOKEN` behavior.
 
+- **Tenant-bound session routing** -- Session HTTP/RPC handlers now derive caller tenant from
+  `x-agent-tenant` (when present) and reject mismatched tenant payload/query values before
+  `SessionPool` access.
+
 ## 0.5.0
 
 ### Minor Changes

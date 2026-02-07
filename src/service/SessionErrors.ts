@@ -1,6 +1,7 @@
 import * as Schema from "effect/Schema"
 import { SessionManagerError } from "../SessionManager.js"
 import { SessionPoolError } from "../SessionPool.js"
+import { SessionTenantAccessError } from "./TenantAccess.js"
 
 export class SessionPoolUnavailableError extends Schema.TaggedError<SessionPoolUnavailableError>()(
   "SessionPoolUnavailableError",
@@ -12,6 +13,7 @@ export class SessionPoolUnavailableError extends Schema.TaggedError<SessionPoolU
 export const SessionServiceError = Schema.Union(
   SessionManagerError,
   SessionPoolError,
+  SessionTenantAccessError,
   SessionPoolUnavailableError
 ).pipe(Schema.annotations({ identifier: "SessionServiceError" }))
 

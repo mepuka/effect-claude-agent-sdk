@@ -15,6 +15,7 @@ import type { QuerySupervisorError } from "../QuerySupervisor.js"
 import { SessionPool } from "../SessionPool.js"
 import { AgentHttpApi } from "./AgentHttpApi.js"
 import { SessionPoolUnavailableError } from "./SessionErrors.js"
+import { resolveRequestTenant } from "./TenantAccess.js"
 
 type SessionPoolService = Context.Tag.Service<typeof SessionPool>
 
@@ -134,46 +135,66 @@ export const layer = HttpApiBuilder.group(AgentHttpApi, "agent", (handlers) =>
       .handle("account", () => withProbeHandle(runtime, (handle) => handle.accountInfo))
       .handle("createSession", ({ payload }) =>
         requirePool((pool) =>
-          pool.create(payload.options, payload.tenant).pipe(
-            Effect.flatMap((handle) => handle.sessionId),
-            Effect.map((sessionId) => ({ sessionId }))
+          resolveRequestTenant(payload.tenant).pipe(
+            Effect.flatMap((tenant) =>
+              pool.create(payload.options, tenant).pipe(
+                Effect.flatMap((handle) => handle.sessionId),
+                Effect.map((sessionId) => ({ sessionId }))
+              ))
           )
         ))
       .handle("listSessions", ({ urlParams }) =>
-        requirePool((pool) => pool.listByTenant(urlParams.tenant))
+        requirePool((pool) =>
+          resolveRequestTenant(urlParams.tenant).pipe(
+            Effect.flatMap((tenant) => pool.listByTenant(tenant))
+          )
+        )
       )
       .handle("getSession", ({ urlParams }) =>
         requirePool((pool) =>
-          pool.get(urlParams.id, undefined, urlParams.tenant).pipe(
-            Effect.zipRight(pool.info(urlParams.id, urlParams.tenant))
+          resolveRequestTenant(urlParams.tenant).pipe(
+            Effect.flatMap((tenant) =>
+              pool.get(urlParams.id, undefined, tenant).pipe(
+                Effect.zipRight(pool.info(urlParams.id, tenant))
+              ))
           )
         ))
       .handle("sendSession", ({ urlParams, payload }) =>
         requirePool((pool) =>
-          pool.get(urlParams.id, undefined, payload.tenant).pipe(
-            Effect.flatMap((handle) => handle.send(payload.message)),
-            Effect.asVoid
+          resolveRequestTenant(payload.tenant).pipe(
+            Effect.flatMap((tenant) =>
+              pool.get(urlParams.id, undefined, tenant).pipe(
+                Effect.flatMap((handle) => handle.send(payload.message)),
+                Effect.asVoid
+              ))
           )
         ))
       .handleRaw("streamSession", ({ urlParams }) =>
         requirePool((pool) =>
-          pool.get(urlParams.id, undefined, urlParams.tenant).pipe(
-            Effect.map((handle) =>
-              HttpServerResponse.stream(
-                toSseStream(handle.stream),
-                {
-                  headers: {
-                    "content-type": "text/event-stream",
-                    "cache-control": "no-cache",
-                    connection: "keep-alive"
-                  }
-                }
-              )
-            )
+          resolveRequestTenant(urlParams.tenant).pipe(
+            Effect.flatMap((tenant) =>
+              pool.get(urlParams.id, undefined, tenant).pipe(
+                Effect.map((handle) =>
+                  HttpServerResponse.stream(
+                    toSseStream(handle.stream),
+                    {
+                      headers: {
+                        "content-type": "text/event-stream",
+                        "cache-control": "no-cache",
+                        connection: "keep-alive"
+                      }
+                    }
+                  )
+                )
+              ))
           )
         ))
       .handle("closeSession", ({ urlParams }) =>
-        requirePool((pool) => pool.close(urlParams.id, urlParams.tenant).pipe(Effect.asVoid))
+        requirePool((pool) =>
+          resolveRequestTenant(urlParams.tenant).pipe(
+            Effect.flatMap((tenant) => pool.close(urlParams.id, tenant).pipe(Effect.asVoid))
+          )
+        )
       )
   })
 )

@@ -62,7 +62,8 @@ export class SyncDurableObject extends EventLogDurableObject {
 
   constructor(ctx: DurableObjectState, env: SyncDoEnv) {
     super({
-      ctx,
+      // Work around duplicate workers-types instances in local type-check environments.
+      ctx: ctx as never,
       env,
       storageLayer: makeStorageLayer(ctx, env)
     })

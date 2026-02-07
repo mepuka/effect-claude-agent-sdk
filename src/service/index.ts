@@ -1,5 +1,6 @@
 export * from "./AgentRpcs.js"
 export * from "./SessionErrors.js"
+export * from "./TenantAccess.js"
 export { layer as agentRpcHandlersLayer } from "./AgentRpcHandlers.js"
 export { layer as agentRpcServerLayer } from "./AgentRpcServer.js"
 export {

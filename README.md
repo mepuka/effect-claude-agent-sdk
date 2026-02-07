@@ -716,6 +716,11 @@ See the [`examples/`](./examples) directory:
 - `agent-service-http-server.ts` / `agent-service-http-client.ts` - HTTP API
 - `agent-service-rpc-server.ts` / `agent-service-rpc-client.ts` - RPC API
 
+Tenant-scoped session access note:
+- Session HTTP/RPC endpoints accept optional tenant fields.
+- If caller identity is supplied via `x-agent-tenant`, session operations are bound to that tenant.
+- Mismatched tenant payload/query values are rejected before session pool access.
+
 ## License
 
 MIT

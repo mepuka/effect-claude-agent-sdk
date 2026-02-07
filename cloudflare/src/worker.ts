@@ -45,13 +45,14 @@ export default {
     const id = env.SYNC_DO.idFromName(tenantResult.tenant)
     const stub = env.SYNC_DO.get(id)
     try {
-      const response = await stub.fetch(request)
-      if (!auth.protocol || !response.webSocket) return response
-      const headers = new Headers(response.headers)
+      const response = await (stub as { fetch: (request: Request) => Promise<Response> }).fetch(request)
+      const upgraded = response as Response & { webSocket?: WebSocket }
+      if (!auth.protocol || !upgraded.webSocket) return response
+      const headers = new Headers(response.headers as HeadersInit)
       headers.set("Sec-WebSocket-Protocol", auth.protocol)
       return new Response(null, {
         status: response.status,
-        webSocket: response.webSocket,
+        webSocket: upgraded.webSocket as never,
         headers
       })
     } catch (error) {

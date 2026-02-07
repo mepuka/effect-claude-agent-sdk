@@ -6,6 +6,7 @@ import * as Layer from "effect/Layer"
 import * as Stream from "effect/Stream"
 import { AgentRuntime } from "../src/AgentRuntime.js"
 import type { QueryHandle } from "../src/Query.js"
+import { SessionPool } from "../src/SessionPool.js"
 import { AgentHttpApi } from "../src/service/AgentHttpApi.js"
 import { layer as AgentHttpHandlers } from "../src/service/AgentHttpHandlers.js"
 import type { SDKMessage } from "../src/Schema/Message.js"
@@ -170,6 +171,116 @@ test("agent HTTP API metadata uses queryRaw", async () => {
     expect(accountResponse.status).toBe(200)
     const accountBody = await accountResponse.json() as { email?: string }
     expect(accountBody.email).toBe("dev@example.com")
+  } finally {
+    await dispose()
+  }
+})
+
+test("agent HTTP session routes enforce caller tenant header", async () => {
+  const captured: Array<string | undefined> = []
+
+  const runtime = AgentRuntime.make({
+    query: () => Effect.dieMessage("query should not be used in session route test"),
+    queryRaw: () => Effect.dieMessage("queryRaw should not be used in session route test"),
+    stream: () => Stream.empty,
+    stats: Effect.succeed({
+      active: 0,
+      pending: 0,
+      concurrencyLimit: 1,
+      pendingQueueCapacity: 0,
+      pendingQueueStrategy: "disabled"
+    }),
+    interruptAll: Effect.void,
+    events: Stream.empty
+  })
+
+  const sessionHandle = {
+    sessionId: Effect.succeed("session-tenant"),
+    send: () => Effect.void,
+    stream: Stream.empty,
+    close: Effect.void
+  }
+
+  const pool = SessionPool.of({
+    create: (_overrides?: unknown, tenant?: string) => {
+      captured.push(tenant)
+      return Effect.succeed(sessionHandle as never)
+    },
+    get: (_sessionId: string, _overrides?: unknown, tenant?: string) => {
+      captured.push(tenant)
+      return Effect.succeed(sessionHandle as never)
+    },
+    info: (_sessionId: string, tenant?: string) =>
+      Effect.succeed({
+        sessionId: "session-tenant",
+        ...(tenant !== undefined ? { tenant } : {}),
+        createdAt: 1,
+        lastUsedAt: 1
+      }),
+    withSession: (_sessionId: string, _use: unknown, _tenant?: string) =>
+      Effect.dieMessage("withSession not used in test") as never,
+    list: Effect.succeed([]),
+    listByTenant: (tenant?: string) => {
+      captured.push(tenant)
+      return Effect.succeed([])
+    },
+    close: (_sessionId: string, tenant?: string) => {
+      captured.push(tenant)
+      return Effect.void
+    },
+    closeAll: Effect.void
+  })
+
+  const runtimeLayer = Layer.succeed(AgentRuntime, runtime)
+  const poolLayer = Layer.succeed(SessionPool, pool)
+  const handlersLayer = AgentHttpHandlers.pipe(
+    Layer.provide(runtimeLayer),
+    Layer.provide(poolLayer)
+  )
+  const apiLayer = HttpApiBuilder.api(AgentHttpApi).pipe(Layer.provide(handlersLayer))
+  const { handler, dispose } = HttpApiBuilder.toWebHandler(
+    Layer.mergeAll(apiLayer, HttpServer.layerContext)
+  )
+
+  try {
+    const createResponse = await handler(
+      new Request("http://localhost/sessions", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-agent-tenant": "team-a"
+        },
+        body: JSON.stringify({ options: { model: "claude-test" } })
+      })
+    )
+    expect(createResponse.status).toBe(200)
+    expect(captured[0]).toBe("team-a")
+
+    const listResponse = await handler(
+      new Request("http://localhost/sessions", {
+        headers: {
+          "x-agent-tenant": "team-a"
+        }
+      })
+    )
+    expect(listResponse.status).toBe(200)
+    expect(captured[1]).toBe("team-a")
+
+    const mismatchResponse = await handler(
+      new Request("http://localhost/sessions/session-tenant/send", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-agent-tenant": "team-a"
+        },
+        body: JSON.stringify({
+          message: "hello",
+          tenant: "team-b"
+        })
+      })
+    )
+    expect(mismatchResponse.status).toBeGreaterThanOrEqual(400)
+    expect(captured.length).toBe(2)
   } finally {
     await dispose()
   }

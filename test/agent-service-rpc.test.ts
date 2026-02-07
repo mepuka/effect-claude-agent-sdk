@@ -11,6 +11,7 @@ import * as Stream from "effect/Stream"
 import { AgentRuntime } from "../src/AgentRuntime.js"
 import type { QueryHandle } from "../src/Query.js"
 import type { SDKMessage } from "../src/Schema/Message.js"
+import { SessionPool } from "../src/SessionPool.js"
 import { AgentRpcs } from "../src/service/AgentRpcs.js"
 import { layer as AgentRpcHandlers } from "../src/service/AgentRpcHandlers.js"
 import { runEffect } from "./effect-test.js"
@@ -270,6 +271,121 @@ test("agent RPC metadata uses queryRaw", async () => {
 
       const account = yield* client.AccountInfo()
       expect(account.email).toBe("dev@example.com")
+    })
+  )
+
+  await runEffect(program)
+})
+
+test("agent RPC session routes enforce caller tenant header", async () => {
+  const captured: Array<string | undefined> = []
+
+  const runtime = AgentRuntime.make({
+    query: () => Effect.dieMessage("query should not be used in session route test"),
+    queryRaw: () => Effect.dieMessage("queryRaw should not be used in session route test"),
+    stream: () => Stream.empty,
+    stats: Effect.succeed({
+      active: 0,
+      pending: 0,
+      concurrencyLimit: 1,
+      pendingQueueCapacity: 0,
+      pendingQueueStrategy: "disabled"
+    }),
+    interruptAll: Effect.void,
+    events: Stream.empty
+  })
+
+  const sessionHandle = {
+    sessionId: Effect.succeed("session-tenant"),
+    send: () => Effect.void,
+    stream: Stream.empty,
+    close: Effect.void
+  }
+
+  const pool = SessionPool.of({
+    create: (_overrides?: unknown, tenant?: string) => {
+      captured.push(tenant)
+      return Effect.succeed(sessionHandle as never)
+    },
+    get: (_sessionId: string, _overrides?: unknown, tenant?: string) => {
+      captured.push(tenant)
+      return Effect.succeed(sessionHandle as never)
+    },
+    info: (_sessionId: string, tenant?: string) =>
+      Effect.succeed({
+        sessionId: "session-tenant",
+        ...(tenant !== undefined ? { tenant } : {}),
+        createdAt: 1,
+        lastUsedAt: 1
+      }),
+    withSession: (_sessionId: string, _use: unknown, _tenant?: string) =>
+      Effect.dieMessage("withSession not used in test") as never,
+    list: Effect.succeed([]),
+    listByTenant: (tenant?: string) => {
+      captured.push(tenant)
+      return Effect.succeed([])
+    },
+    close: (_sessionId: string, tenant?: string) => {
+      captured.push(tenant)
+      return Effect.void
+    },
+    closeAll: Effect.void
+  })
+
+  const runtimeLayer = Layer.succeed(AgentRuntime, runtime)
+  const poolLayer = Layer.succeed(SessionPool, pool)
+  const handlersLayer = AgentRpcHandlers.pipe(
+    Layer.provide(runtimeLayer),
+    Layer.provide(poolLayer)
+  )
+  const serverLayer = Layer.mergeAll(
+    handlersLayer,
+    RpcSerialization.layerNdjson,
+    HttpServer.layerContext
+  )
+
+  const program = Effect.scoped(
+    Effect.gen(function*() {
+      const { handler } = yield* Effect.acquireRelease(
+        Effect.sync(() =>
+          RpcServer.toWebHandler(AgentRpcs, { layer: serverLayer })
+        ),
+        ({ dispose }) => Effect.promise(dispose)
+      )
+
+      const tenantClient = HttpClient.mapRequest(
+        makeWebHandlerClient(handler),
+        HttpClientRequest.setHeader("x-agent-tenant", "team-a")
+      )
+
+      const clientLayer = RpcClient.layerProtocolHttp({
+        url: "http://localhost/rpc"
+      }).pipe(
+        Layer.provide(Layer.succeed(HttpClient.HttpClient, tenantClient)),
+        Layer.provide(RpcSerialization.layerNdjson)
+      )
+
+      const client = yield* RpcClient.make(AgentRpcs).pipe(
+        Effect.provide(clientLayer)
+      )
+
+      const created = yield* client.CreateSession({ options: { model: "claude-test" } })
+      expect(created.sessionId).toBe("session-tenant")
+      expect(captured[0]).toBe("team-a")
+
+      const listed = yield* client.ListSessionsByTenant({})
+      expect(Array.isArray(listed)).toBe(true)
+      expect(captured[1]).toBe("team-a")
+
+      const mismatch = yield* Effect.either(
+        client.SendSession({
+          sessionId: "session-tenant",
+          message: "hello",
+          tenant: "team-b"
+        })
+      )
+      expect(mismatch._tag).toBe("Left")
+      expect(captured.length).toBe(2)
     })
   )
 
