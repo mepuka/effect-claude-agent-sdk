@@ -489,7 +489,9 @@ export const layerCloudflare = (
                   operation: "accountInfo",
                   provider: "cloudflare"
                 })
-              )
+              ),
+              initializationResult: unsupportedInput("initializationResult"),
+              stopTask: () => unsupportedInput("stopTask")
             }
 
             return handle

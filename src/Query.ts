@@ -137,4 +137,19 @@ export interface QueryHandle {
    * Fetch account info for the running query.
    */
   readonly accountInfo: Effect.Effect<AccountInfo, AgentSdkError>
+  /**
+   * Get the full initialization result including commands, models, account info,
+   * and output style configuration.
+   */
+  readonly initializationResult: Effect.Effect<{
+    readonly commands: ReadonlyArray<SlashCommand>
+    readonly output_style: string
+    readonly available_output_styles: ReadonlyArray<string>
+    readonly models: ReadonlyArray<ModelInfo>
+    readonly account: AccountInfo
+  }, AgentSdkError>
+  /**
+   * Stop a running task by its ID.
+   */
+  readonly stopTask: (taskId: string) => Effect.Effect<void, AgentSdkError>
 }

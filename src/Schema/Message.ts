@@ -17,7 +17,8 @@ export const SDKAssistantMessageError = withIdentifier(
     "rate_limit",
     "invalid_request",
     "server_error",
-    "unknown"
+    "unknown",
+    "max_output_tokens"
   ),
   "SDKAssistantMessageError"
 )
@@ -151,6 +152,7 @@ export const SDKResultSuccess = withSdkMessage(
     is_error: Schema.Boolean,
     num_turns: Schema.Number,
     result: Schema.String,
+    stop_reason: Schema.optional(Schema.Union(Schema.String, Schema.Null)),
     total_cost_usd: Schema.Number,
     usage: NonNullableUsage,
     modelUsage: Schema.Record({ key: Schema.String, value: ModelUsage }),
@@ -178,6 +180,7 @@ export const SDKResultError = withSdkMessage(
     duration_api_ms: Schema.Number,
     is_error: Schema.Boolean,
     num_turns: Schema.Number,
+    stop_reason: Schema.optional(Schema.Union(Schema.String, Schema.Null)),
     total_cost_usd: Schema.Number,
     usage: NonNullableUsage,
     modelUsage: Schema.Record({ key: Schema.String, value: ModelUsage }),
@@ -213,6 +216,7 @@ export const SDKStatusMessage = withSdkMessage(
     type: Schema.Literal("system"),
     subtype: Schema.Literal("status"),
     status: SDKStatus,
+    permissionMode: Schema.optional(PermissionMode),
     uuid: UUID,
     session_id: Schema.String
   }),
@@ -274,6 +278,23 @@ export const SDKTaskNotificationMessage = withSdkMessage(
 
 export type SDKTaskNotificationMessage = typeof SDKTaskNotificationMessage.Type
 export type SDKTaskNotificationMessageEncoded = typeof SDKTaskNotificationMessage.Encoded
+
+export const SDKTaskStartedMessage = withSdkMessage(
+  Schema.Struct({
+    type: Schema.Literal("system"),
+    subtype: Schema.Literal("task_started"),
+    task_id: Schema.String,
+    tool_use_id: Schema.optional(Schema.String),
+    description: Schema.String,
+    task_type: Schema.optional(Schema.String),
+    uuid: UUID,
+    session_id: Schema.String
+  }),
+  "SDKTaskStartedMessage"
+)
+
+export type SDKTaskStartedMessage = typeof SDKTaskStartedMessage.Type
+export type SDKTaskStartedMessageEncoded = typeof SDKTaskStartedMessage.Encoded
 
 export const SDKFilesPersistedEvent = withSdkMessage(
   Schema.Struct({
@@ -381,6 +402,7 @@ export const SDKMessage = withIdentifier(
     SDKToolUseSummaryMessage,
     SDKAuthStatusMessage,
     SDKTaskNotificationMessage,
+    SDKTaskStartedMessage,
     SDKFilesPersistedEvent
   ),
   "SDKMessage"

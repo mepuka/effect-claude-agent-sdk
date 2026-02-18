@@ -103,6 +103,12 @@ const HookMap = Schema.Record({ key: HookEvent, value: Schema.Array(HookCallback
   Schema.partial
 )
 
+const ThinkingConfig = Schema.Union(
+  Schema.Struct({ type: Schema.Literal("adaptive") }),
+  Schema.Struct({ type: Schema.Literal("enabled"), budgetTokens: Schema.Number }),
+  Schema.Struct({ type: Schema.Literal("disabled") })
+)
+
 export const Options = withIdentifier(
   Schema.Struct({
     abortController: Schema.optional(AbortController),
@@ -115,7 +121,10 @@ export const Options = withIdentifier(
     canUseTool: Schema.optional(CanUseTool),
     continue: Schema.optional(Schema.Boolean),
     cwd: Schema.optional(Schema.String),
+    debug: Schema.optional(Schema.Boolean),
+    debugFile: Schema.optional(Schema.String),
     disallowedTools: Schema.optional(Schema.Array(Schema.String)),
+    effort: Schema.optional(Schema.Literal("low", "medium", "high", "max")),
     enableFileCheckpointing: Schema.optional(Schema.Boolean),
     env: Schema.optional(
       Schema.Record({
@@ -133,6 +142,7 @@ export const Options = withIdentifier(
     hooks: Schema.optional(HookMap),
     includePartialMessages: Schema.optional(Schema.Boolean),
     maxBudgetUsd: Schema.optional(Schema.Number),
+    /** @deprecated Use `thinking` instead */
     maxThinkingTokens: Schema.optional(Schema.Number),
     maxTurns: Schema.optional(Schema.Number),
     mcpServers: Schema.optional(Schema.Record({ key: Schema.String, value: McpServerConfig })),
@@ -141,14 +151,17 @@ export const Options = withIdentifier(
     pathToClaudeCodeExecutable: Schema.optional(Schema.String),
     permissionMode: Schema.optional(PermissionMode),
     permissionPromptToolName: Schema.optional(Schema.String),
+    persistSession: Schema.optional(Schema.Boolean),
     plugins: Schema.optional(Schema.Array(SdkPluginConfig)),
     resume: Schema.optional(Schema.String),
     resumeSessionAt: Schema.optional(Schema.String),
     sandbox: Schema.optional(SandboxSettings),
+    sessionId: Schema.optional(Schema.String),
     settingSources: Schema.optional(Schema.Array(SettingSource)),
     stderr: Schema.optional(StderrCallback),
     strictMcpConfig: Schema.optional(Schema.Boolean),
     systemPrompt: Schema.optional(SystemPrompt),
+    thinking: Schema.optional(ThinkingConfig),
     tools: Schema.optional(ToolsConfig),
     spawnClaudeCodeProcess: Schema.optional(SpawnClaudeCodeProcess)
   }),

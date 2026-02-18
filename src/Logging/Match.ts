@@ -290,6 +290,19 @@ export const matchSdkMessage = Match.type<SDKMessage>().pipe(
       }
     })
   }),
+  Match.when({ type: "system", subtype: "task_started" }, (message) =>
+    makeSdkEvent(message, {
+      level: LogLevel.Info,
+      event: "sdk.message.system.task_started",
+      messageText: "task started",
+      data: {
+        task_id: message.task_id,
+        description: message.description,
+        tool_use_id: message.tool_use_id,
+        task_type: message.task_type
+      }
+    })
+  ),
   Match.when({ type: "stream_event" }, (message) =>
     makeSdkEvent(message, {
       level: LogLevel.Trace,
@@ -333,24 +346,13 @@ export const matchSdkMessage = Match.type<SDKMessage>().pipe(
       }
     })
   ),
-  Match.when({ type: "auth_status", error: Match.string }, (message) =>
-    makeSdkEvent(message, {
-      level: LogLevel.Warning,
-      event: "sdk.message.auth_status.error",
-      messageText: "auth status error",
-      data: {
-        error: message.error,
-        output: message.output,
-        isAuthenticating: message.isAuthenticating
-      }
-    })
-  ),
   Match.when({ type: "auth_status" }, (message) =>
     makeSdkEvent(message, {
-      level: LogLevel.Info,
-      event: "sdk.message.auth_status",
-      messageText: "auth status",
+      level: message.error ? LogLevel.Warning : LogLevel.Info,
+      event: message.error ? "sdk.message.auth_status.error" : "sdk.message.auth_status",
+      messageText: message.error ? "auth status error" : "auth status",
       data: {
+        error: message.error,
         output: message.output,
         isAuthenticating: message.isAuthenticating
       }
@@ -679,6 +681,37 @@ export const matchHookInput = Match.type<HookInput>().pipe(
       messageText: "hook setup",
       data: {
         trigger: input.trigger,
+        cwd: input.cwd,
+        transcript_path: input.transcript_path,
+        permission_mode: input.permission_mode
+      }
+    })
+  ),
+  Match.when({ hook_event_name: "TeammateIdle" }, (input) =>
+    makeHookEvent(input, {
+      level: LogLevel.Info,
+      eventName: "agent.hook.teammate_idle",
+      messageText: "hook teammate idle",
+      data: {
+        teammate_name: input.teammate_name,
+        team_name: input.team_name,
+        cwd: input.cwd,
+        transcript_path: input.transcript_path,
+        permission_mode: input.permission_mode
+      }
+    })
+  ),
+  Match.when({ hook_event_name: "TaskCompleted" }, (input) =>
+    makeHookEvent(input, {
+      level: LogLevel.Info,
+      eventName: "agent.hook.task_completed",
+      messageText: "hook task completed",
+      data: {
+        task_id: input.task_id,
+        task_subject: input.task_subject,
+        task_description: input.task_description,
+        teammate_name: input.teammate_name,
+        team_name: input.team_name,
         cwd: input.cwd,
         transcript_path: input.transcript_path,
         permission_mode: input.permission_mode

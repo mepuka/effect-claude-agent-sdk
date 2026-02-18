@@ -127,7 +127,7 @@ Never guess at Effect patterns - check the guide first.
 <!-- claude-agent-sdk:start -->
 ## Claude Agent SDK
 
-This project uses `@anthropic-ai/claude-agent-sdk` for building AI agents.
+This project uses `@anthropic-ai/claude-agent-sdk` (v0.2.45) for building AI agents.
 
 **Full API Reference:** `.reference/claude-agent-sdk/typescript.md`
 

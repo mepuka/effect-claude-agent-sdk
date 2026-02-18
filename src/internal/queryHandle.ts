@@ -28,6 +28,14 @@ export type SdkQueryLike = AsyncIterable<SDKMessage> & {
   mcpServerStatus: () => Promise<ReadonlyArray<McpServerStatus>>
   setMcpServers: (servers: Record<string, SdkMcpServerConfig>) => Promise<McpSetServersResult>
   accountInfo: () => Promise<AccountInfo>
+  initializationResult: () => Promise<{
+    commands: ReadonlyArray<SlashCommand>
+    output_style: string
+    available_output_styles: ReadonlyArray<string>
+    models: ReadonlyArray<ModelInfo>
+    account: AccountInfo
+  }>
+  stopTask: (taskId: string) => Promise<void>
 }
 
 const toTransportError = (message: string, cause: unknown) =>
@@ -143,6 +151,12 @@ export const makeQueryHandle = (
   const accountInfo = sdkPromise("Failed to load account info", () =>
     sdkQueryInstance.accountInfo()
   )
+  const initializationResult = sdkPromise("Failed to load initialization result", () =>
+    sdkQueryInstance.initializationResult()
+  )
+  const stopTask = Effect.fn("QueryHandle.stopTask")((taskId: string) =>
+    sdkPromise("Failed to stop task", () => sdkQueryInstance.stopTask(taskId))
+  )
 
   return {
     stream,
@@ -161,6 +175,8 @@ export const makeQueryHandle = (
     supportedModels,
     mcpServerStatus,
     setMcpServers,
-    accountInfo
+    accountInfo,
+    initializationResult,
+    stopTask
   }
 }

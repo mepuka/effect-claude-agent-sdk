@@ -21,6 +21,7 @@ import type {
   SDKStatusMessage,
   SDKSystemMessage,
   SDKTaskNotificationMessage,
+  SDKTaskStartedMessage,
   SDKToolProgressMessage,
   SDKToolUseSummaryMessage,
   SDKUserMessage,
@@ -133,6 +134,7 @@ type SystemLikeMessage =
   | SDKHookProgressMessage
   | SDKHookResponseMessage
   | SDKTaskNotificationMessage
+  | SDKTaskStartedMessage
   | SDKFilesPersistedEvent
 
 type ToolMessage = SDKToolProgressMessage | SDKToolUseSummaryMessage
@@ -194,6 +196,9 @@ export const fold = <R>(handlers: {
       handlers.system(msg as unknown as SystemLikeMessage)
     ),
     Match.when({ type: "system", subtype: "task_notification" }, (msg) =>
+      handlers.system(msg as unknown as SystemLikeMessage)
+    ),
+    Match.when({ type: "system", subtype: "task_started" }, (msg) =>
       handlers.system(msg as unknown as SystemLikeMessage)
     ),
     Match.exhaustive

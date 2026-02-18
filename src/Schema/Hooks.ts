@@ -27,7 +27,9 @@ export const HookEvent = withIdentifier(
     "SubagentStop",
     "PreCompact",
     "PermissionRequest",
-    "Setup"
+    "Setup",
+    "TeammateIdle",
+    "TaskCompleted"
   ),
   "HookEvent"
 )
@@ -118,7 +120,8 @@ export const SubagentStopHookInput = withIdentifier(
     hook_event_name: Schema.Literal("SubagentStop"),
     stop_hook_active: Schema.Boolean,
     agent_id: Schema.String,
-    agent_transcript_path: Schema.String
+    agent_transcript_path: Schema.String,
+    agent_type: Schema.String
   }),
   "SubagentStopHookInput"
 )
@@ -210,6 +213,35 @@ export const SetupHookInput = withIdentifier(
 export type SetupHookInput = typeof SetupHookInput.Type
 export type SetupHookInputEncoded = typeof SetupHookInput.Encoded
 
+export const TeammateIdleHookInput = withIdentifier(
+  Schema.Struct({
+    ...BaseHookInput.fields,
+    hook_event_name: Schema.Literal("TeammateIdle"),
+    teammate_name: Schema.String,
+    team_name: Schema.String
+  }),
+  "TeammateIdleHookInput"
+)
+
+export type TeammateIdleHookInput = typeof TeammateIdleHookInput.Type
+export type TeammateIdleHookInputEncoded = typeof TeammateIdleHookInput.Encoded
+
+export const TaskCompletedHookInput = withIdentifier(
+  Schema.Struct({
+    ...BaseHookInput.fields,
+    hook_event_name: Schema.Literal("TaskCompleted"),
+    task_id: Schema.String,
+    task_subject: Schema.String,
+    task_description: Schema.optional(Schema.String),
+    teammate_name: Schema.optional(Schema.String),
+    team_name: Schema.optional(Schema.String)
+  }),
+  "TaskCompletedHookInput"
+)
+
+export type TaskCompletedHookInput = typeof TaskCompletedHookInput.Type
+export type TaskCompletedHookInputEncoded = typeof TaskCompletedHookInput.Encoded
+
 export const HookInput = withIdentifier(
   Schema.Union(
     PreToolUseHookInput,
@@ -224,7 +256,9 @@ export const HookInput = withIdentifier(
     SubagentStopHookInput,
     PreCompactHookInput,
     PermissionRequestHookInput,
-    SetupHookInput
+    SetupHookInput,
+    TeammateIdleHookInput,
+    TaskCompletedHookInput
   ),
   "HookInput"
 )
@@ -313,6 +347,17 @@ export const PostToolUseFailureHookSpecificOutput = withIdentifier(
 export type PostToolUseFailureHookSpecificOutput = typeof PostToolUseFailureHookSpecificOutput.Type
 export type PostToolUseFailureHookSpecificOutputEncoded = typeof PostToolUseFailureHookSpecificOutput.Encoded
 
+export const NotificationHookSpecificOutput = withIdentifier(
+  Schema.Struct({
+    hookEventName: Schema.Literal("Notification"),
+    additionalContext: Schema.optional(Schema.String)
+  }),
+  "NotificationHookSpecificOutput"
+)
+
+export type NotificationHookSpecificOutput = typeof NotificationHookSpecificOutput.Type
+export type NotificationHookSpecificOutputEncoded = typeof NotificationHookSpecificOutput.Encoded
+
 export const HookSpecificOutput = withIdentifier(
   Schema.Union(
     PreToolUseHookSpecificOutput,
@@ -322,6 +367,7 @@ export const HookSpecificOutput = withIdentifier(
     SubagentStartHookSpecificOutput,
     PostToolUseHookSpecificOutput,
     PostToolUseFailureHookSpecificOutput,
+    NotificationHookSpecificOutput,
     PermissionRequestHookSpecificOutput
   ),
   "HookSpecificOutput"
